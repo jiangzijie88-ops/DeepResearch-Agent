@@ -84,33 +84,3 @@ critic_agent = Agent(
 )
 
 
-# ============================================================
-# Save Final Critic Review
-# ============================================================
-
-if final_review is not None:
-
-    critic_path = os.path.join(
-        "outputs",
-        f"critic_{timestamp}.json",
-    )
-
-
-    with open(
-        critic_path,
-        "w",
-        encoding="utf-8",
-    ) as critic_file:
-
-        json.dump(
-            final_review.model_dump(),
-            critic_file,
-            ensure_ascii=False,
-            indent=2,
-        )
-
-
-    print(
-        f"[Workflow] 最终审核结果已保存到："
-        f"{critic_path}"
-    )
