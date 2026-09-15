@@ -2,12 +2,13 @@ from pydantic import BaseModel, Field
 from agents import Agent
 
 from llm import get_model
+from models.search_type import SearchType
 
 
 class ResearchSubQuestion(BaseModel):
     id: int = Field(description="子问题编号")
     question: str = Field(description="需要调查的具体研究子问题")
-    search_type: str = Field(
+    search_type: SearchType = Field(
         description="建议的检索类型，只能是 paper_search、web_search 或 both"
     )
 
@@ -46,13 +47,27 @@ planner_agent = Agent(
 
 JSON 格式必须严格为：
 
+OUTPUT FORMAT
+
+必须只返回合法 JSON：
+
 {
-  "research_goal": "研究总体目标",
+  "research_goal": "...",
   "sub_questions": [
     {
       "id": 1,
-      "question": "具体研究子问题",
+      "question": "...",
       "search_type": "paper_search"
+    },
+    {
+      "id": 2,
+      "question": "...",
+      "search_type": "web_search"
+    },
+    {
+      "id": 3,
+      "question": "...",
+      "search_type": "hybrid"
     }
   ]
 }
@@ -61,6 +76,41 @@ search_type 只能是：
 paper_search
 web_search
 both
+
+
+SEARCH TYPE RULES
+
+每个研究子问题必须指定且只能指定以下一种 search_type：
+
+1. "paper_search"
+   用于需要检索学术论文、作者、发表年份、
+   会议/期刊、DOI、引用量等学术元数据的问题。
+
+2. "web_search"
+   用于需要检索普通网页、新闻、官方网站、
+   项目主页、公司信息、当前事件或其他非论文信息的问题。
+
+3. "hybrid"
+   仅当一个子问题确实同时需要学术论文信息
+   和普通 Web 信息时使用。
+
+禁止输出其他 search_type，例如：
+"paper"、"papers"、"academic"、"google"、
+"browser"、"search"、"academic_search"。
+
+
+优先选择最小必要工具：
+
+- 仅需要论文数据库信息时：
+  使用 "paper_search"
+
+- 仅需要公开网页信息时：
+  使用 "web_search"
+
+- 只有两类信息都必不可少时：
+  才使用 "hybrid"
+
+不要为了保险而默认使用 "hybrid"。
 """,
 
     model=get_model(),

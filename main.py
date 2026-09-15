@@ -3,20 +3,37 @@ import os
 import sys
 from datetime import datetime
 
-from agents import Runner
-
-from workers.planner import planner_agent, ResearchPlan
-from workers.researcher import researcher_agent
-from workers.writer import writer_agent
-from workers.critic import critic_agent
 
 from tools.web_search import reset_search_count
 from tools.paper_search import reset_paper_search_count
 
-from models.evidence import Evidence
 from models.evidence_store import EvidenceStore
-from models.critic_review import CriticReview
+from models.research_state import ResearchState, ResearchStatus
+from models.state_store import save_state, load_state
 
+from workflow.cli import parse_args
+from workflow.resume import ResumeStage, get_resume_stage
+from workflow.stages import (
+    run_planner,
+    run_writer,
+    run_critic,
+    run_research_query,
+)
+from memory.memory_item import (
+    MemoryItem,
+)
+
+from memory.memory_storage import (
+    save_memory,
+    load_memory,
+)
+
+from memory.memory_context import (
+    build_memory_context,
+)
+
+
+args = parse_args()
 
 # ============================================================
 # Workflow Log
@@ -38,6 +55,16 @@ log_path = os.path.join(
     f"workflow_{timestamp}.log",
 )
 
+if args.resume:
+
+    state_path = args.resume
+
+else:
+
+    state_path = os.path.join(
+        "outputs",
+        f"state_{timestamp}.json",
+    )
 
 log_file = open(
     log_path,
@@ -94,36 +121,148 @@ print(
 
 
 # ============================================================
-# User Question
+# User Question / Resume State
 # ============================================================
 
-question = input("请输入你的研究问题：\n")
+if args.resume:
+
+    state = load_state(
+        state_path
+    )
+
+    question = state.question
+
+    print(
+        f"[Resume] 已加载 Research State："
+        f"{state_path}"
+    )
+
+    print(
+        f"[Resume] 当前 Workflow status: "
+        f"{state.status.value}"
+    )
+
+    print(
+        f"[Resume] Research round: "
+        f"{state.research_round}"
+    )
+
+else:
+
+    question = input(
+        "请输入你的研究问题：\n"
+    )
+
+    state = ResearchState(
+        question=question
+    )
+
+    save_state(
+        state,
+        state_path,
+    )
+
+resume_stage = get_resume_stage(
+    state
+)
+
+print(
+    f"[Workflow] Resume stage: "
+    f"{resume_stage.value}"
+)
+
+
+if resume_stage == ResumeStage.DONE:
+
+    print(
+        "[Resume] 当前任务已经完成，"
+        "无需重新执行 Workflow。"
+    )
+
+    if state.final_report:
+
+        print("\n" + "=" * 60)
+        print("FINAL REPORT")
+        print("=" * 60)
+
+        print(
+            state.final_report
+        )
+
+    sys.exit(0)
 
 
 # ============================================================
 # Step 1: Planner
 # ============================================================
 
-print("\n[Planner] 正在生成研究计划...\n")
+if resume_stage == ResumeStage.PLANNER:
+
+    print(
+        "\n[Planner] 正在生成研究计划...\n"
+    )
+
+    memory_items = load_memory(
+        "outputs/memory.json"
+    )
 
 
-planner_result = Runner.run_sync(
-    planner_agent,
-    question,
-    max_turns=3,
-)
+    memory_context = build_memory_context(
+        memory_items,
+        state.question,
+    )
 
 
-raw_plan = planner_result.final_output
+    print(
+        "\n[Memory] Planner 使用历史研究记忆:"
+    )
+
+    print(
+        memory_context
+    )
 
 
-# JSON String -> Python dict
-plan_dict = json.loads(raw_plan)
+    plan = run_planner(
+        state.question,
+        memory_context=memory_context,
+    )
+
+    state.plan = plan
+    state.status = ResearchStatus.PLANNED
+
+    save_state(
+        state,
+        state_path,
+    )
+
+    resume_stage = get_resume_stage(
+        state
+    )
+
+    print(
+        f"[State] Workflow status: "
+        f"{state.status.value}"
+    )
 
 
-# dict -> ResearchPlan
-plan = ResearchPlan.model_validate(
-    plan_dict
+else:
+
+    plan = state.plan
+
+    if plan is None:
+
+        raise RuntimeError(
+            "Resume state 显示 Planner 已完成，"
+            "但 state.plan 为空。"
+        )
+
+    print(
+        "[Resume] Planner 已完成，"
+        "跳过 Planner 阶段。"
+    )
+
+print(
+    f"[State] Workflow status: {state.status.value}"
 )
 
 
@@ -158,104 +297,124 @@ for sub_question in plan.sub_questions:
 evidence_store = EvidenceStore()
 
 
-for sub_question in plan.sub_questions:
+if resume_stage == ResumeStage.RESEARCH:
 
-    print("\n" + "=" * 60)
-
-    print(
-        f"[Researcher] 正在执行子问题 "
-        f"{sub_question.id}"
-    )
+    state.status = ResearchStatus.RESEARCHING
 
     print(
-        f"[Task] {sub_question.question}"
-    )
-
-    print(
-        f"[Suggested Search Type] "
-        f"{sub_question.search_type}"
-    )
-
-    print("=" * 60)
-
-
-    # 每个子问题开始前重置 Tool Budget
-    reset_search_count()
-    reset_paper_search_count()
-
-
-    researcher_result = Runner.run_sync(
-        researcher_agent,
-        sub_question.question,
-        max_turns=8,
+        f"[State] Workflow status: "
+        f"{state.status.value}"
     )
 
 
-    raw_output = researcher_result.final_output
+    for sub_question in plan.sub_questions:
 
+        print("\n" + "=" * 60)
 
-    # ============================================================
-    # Safe Parse Researcher Output
-    # ============================================================
-
-    try:
-
-        data = json.loads(
-            raw_output
+        print(
+            f"[Researcher] 正在执行子问题 "
+            f"{sub_question.id}"
         )
 
-        evidence_list = [
-            Evidence.model_validate(item)
-            for item in data.get(
-                "evidence",
-                []
-            )
+        print(
+            f"[Task] {sub_question.question}"
+        )
+
+        print(
+            f"[Suggested Search Type] "
+            f"{sub_question.search_type}"
+        )
+
+        state.tool_routes[
+            str(sub_question.id)
+        ] = [
+            sub_question.search_type.value
         ]
 
+        print("=" * 60)
 
-    except (
-        json.JSONDecodeError,
-        TypeError,
-        ValueError,
-    ) as e:
 
-        print(
-            f"\n[Evidence Parse Error] "
-            f"子问题 {sub_question.id} "
-            f"返回结果不是合法 JSON"
+        # 每个子问题开始前重置 Tool Budget
+        reset_search_count()
+        reset_paper_search_count()
+
+
+        try:
+
+            evidence_list = run_research_query(
+                query=sub_question.question,
+
+                search_type=(
+                    sub_question.search_type
+                ),
+)
+
+        except (
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as e:
+
+            print(
+                f"\n[Evidence Parse Error] "
+                f"子问题 {sub_question.id} "
+                f"返回结果解析失败"
+            )
+
+            print(
+                f"[Error] {e}"
+            )
+
+            print(
+                "[Fallback] 本子问题按 0 条 Evidence 处理，"
+                "Workflow 继续执行。"
+            )
+
+            evidence_list = []
+
+
+        # 加入统一 Evidence Store
+        added_count = evidence_store.add_many(
+            evidence_list
         )
 
-        print(
-            f"[Error] {e}"
-        )
 
         print(
-            "[Fallback] 本子问题按 0 条 Evidence 处理，"
-            "Workflow 继续执行。"
+            f"\n[Evidence] 子问题 "
+            f"{sub_question.id} "
+            f"获得 {len(evidence_list)} 条证据，"
+            f"新增 {added_count} 条，"
+            f"当前总计 "
+            f"{evidence_store.count()} 条"
         )
 
-        evidence_list = []
 
+    state.evidence = evidence_store.get_all()
 
-    # 加入统一 Evidence Store
-    added_count = evidence_store.add_many(
-        evidence_list
+    save_state(
+        state,
+        state_path,
     )
 
+    resume_stage = ResumeStage.WRITER
 
-    print(
-        f"\n[Evidence] 子问题 "
-        f"{sub_question.id} "
-        f"获得 {len(evidence_list)} 条证据，"
-        f"新增 {added_count} 条，"
-        f"当前总计 "
-        f"{evidence_store.count()} 条"
+if resume_stage != ResumeStage.RESEARCH:
+
+    evidence_store.add_many(
+        state.evidence
     )
 
 
 # ============================================================
 # Step 3: Print Evidence Store
 # ============================================================
+
+state.evidence = evidence_store.get_all()
+
+save_state(
+    state,
+    state_path,
+)
 
 print("\n\n" + "=" * 60)
 
@@ -281,6 +440,18 @@ for index, evidence in enumerate(
 
     print(
         f"Title: {evidence.title}"
+    )
+
+    print(
+        f"Authors: {', '.join(evidence.authors)}"
+    )
+
+    print(
+        f"Venue: {evidence.venue}"
+    )
+
+    print(
+        f"Published At: {evidence.published_at}"
     )
 
     print(
@@ -318,18 +489,24 @@ for index, evidence in enumerate(
 
     evidence_lines.append(
         f"""
-Evidence {index}
+    Evidence {index}
 
-Title: {evidence.title}
-Evidence Type: {evidence.evidence_type}
-Year: {evidence.year}
-Citations: {evidence.citations}
-Source: {evidence.source}
-DOI: {evidence.doi}
-URL: {evidence.url}
-Summary: {evidence.summary}
-Verified: {evidence.verified}
-"""
+    Title: {evidence.title}
+    Evidence Type: {evidence.evidence_type}
+    Authors: {", ".join(evidence.authors)}
+    Venue: {evidence.venue}
+    Published At: {evidence.published_at}
+    Year: {evidence.year}
+    Citations: {evidence.citations}
+    Source: {evidence.source}
+    DOI: {evidence.doi}
+    URL: {evidence.url}
+    Summary: {evidence.summary}
+    Query: {evidence.query}
+    Retrieved At: {evidence.retrieved_at}
+    Verified: {evidence.verified}
+    Confidence: {evidence.confidence}
+    """
     )
 
 
@@ -342,7 +519,16 @@ evidence_text = "\n".join(
 # Step 5: Writer
 # ============================================================
 
-writer_input = f"""
+if resume_stage == ResumeStage.WRITER:
+
+    state.status = ResearchStatus.WRITING
+
+    print(
+        f"[State] Workflow status: "
+        f"{state.status.value}"
+    )
+
+    writer_input = f"""
 用户原始研究问题：
 
 {question}
@@ -364,17 +550,39 @@ Research Goal:
 {evidence_text}
 """
 
+    print(
+        "\n[Writer] 正在生成 Research Report...\n"
+    )
 
-print(
-    "\n[Writer] 正在生成 Research Report...\n"
-)
+    report_text = run_writer(
+        writer_input
+    )
+
+    state.draft_report = report_text
+
+    save_state(
+        state,
+        state_path,
+    )
+
+    resume_stage = ResumeStage.CRITIC
 
 
-writer_result = Runner.run_sync(
-    writer_agent,
-    writer_input,
-    max_turns=3,
-)
+else:
+
+    report_text = state.draft_report
+
+    if report_text is None:
+
+        raise RuntimeError(
+            "Resume state 显示 Writer 已完成，"
+            "但 state.draft_report 为空。"
+        )
+
+    print(
+        "[Resume] Writer 第一版报告已完成，"
+        "跳过 Writer 阶段。"
+    )
 
 
 # ============================================================
@@ -387,21 +595,18 @@ print("FINAL RESEARCH REPORT")
 
 print("=" * 60)
 
-
 print(
-    writer_result.final_output
+    report_text
 )
-
 
 
 # ============================================================
 # Step 7: Critic
 # ============================================================
 
-report_text = writer_result.final_output
+if resume_stage == ResumeStage.CRITIC:
 
-
-critic_input = f"""
+    critic_input = f"""
 用户原始研究问题：
 
 {question}
@@ -439,47 +644,75 @@ Research Goal:
 你只负责审核，不要重新搜索。
 """
 
-
-print(
-    "\n[Critic] 正在审核 Research Report...\n"
-)
-
-
-critic_result = Runner.run_sync(
-    critic_agent,
-    critic_input,
-    max_turns=3,
-)
-critic_raw_output = critic_result.final_output
-
-
-try:
-
-    critic_data = json.loads(
-        critic_raw_output
-    )
-
-    review = CriticReview.model_validate(
-        critic_data
-    )
-
-
-except (
-    json.JSONDecodeError,
-    TypeError,
-    ValueError,
-) as e:
+    state.status = ResearchStatus.REVIEWING
 
     print(
-        "\n[Critic Parse Error] "
-        "Critic 返回结果不是合法 JSON"
+        f"[State] Workflow status: "
+        f"{state.status.value}"
     )
 
     print(
-        f"[Error] {e}"
+        "\n[Critic] 正在审核 Research Report...\n"
     )
 
-    review = None
+    try:
+
+        review = run_critic(
+            critic_input
+        )
+
+        critic_raw_output = (
+            review.model_dump_json(
+                indent=2
+            )
+        )
+
+        state.critic_review = review
+
+        save_state(
+            state,
+            state_path,
+        )
+
+    except (
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as e:
+
+        print(
+            "\n[Critic Parse Error] "
+            "Critic 返回结果不是合法 JSON"
+        )
+
+        print(
+            f"[Error] {e}"
+        )
+
+        review = None
+
+
+else:
+
+    review = state.critic_review
+
+    if review is None:
+
+        raise RuntimeError(
+            "Resume state 显示 Critic 已完成，"
+            "但 state.critic_review 为空。"
+        )
+
+    critic_raw_output = (
+        review.model_dump_json(
+            indent=2
+        )
+    )
+
+    print(
+        "[Resume] 第一轮 Critic 已完成，"
+        "跳过 Critic 阶段。"
+    )
 
 
 if review is not None:
@@ -509,15 +742,32 @@ if review is not None:
             f"- {query}"
         )
 
+if (
+    review is not None
+    and review.needs_research
+):
+    resume_stage = ResumeStage.RE_RESEARCH
+
+else:
+    resume_stage = ResumeStage.REVISION
+
 
 # ============================================================
 # Step 8: Critic-Guided Additional Research
 # ============================================================
 
-if (
-    review is not None
-    and review.needs_research
-):
+if resume_stage == ResumeStage.RE_RESEARCH:
+
+    state.status = ResearchStatus.RE_RESEARCHING
+    state.research_round += 1
+
+    print(
+        f"[State] Workflow status: {state.status.value}"
+    )
+
+    print(
+        f"[State] Research round: {state.research_round}"
+    )
 
     print("\n" + "=" * 60)
 
@@ -547,32 +797,13 @@ if (
         reset_paper_search_count()
 
 
-        additional_result = Runner.run_sync(
-            researcher_agent,
-            query,
-            max_turns=8,
-        )
-
-
-        raw_output = (
-            additional_result.final_output
-        )
-
-
         try:
 
-            data = json.loads(
-                raw_output
-            )
-
-            additional_evidence = [
-                Evidence.model_validate(item)
-                for item in data.get(
-                    "evidence",
-                    []
+            additional_evidence = (
+                run_research_query(
+                    query
                 )
-            ]
-
+            )
 
         except (
             json.JSONDecodeError,
@@ -583,7 +814,7 @@ if (
             print(
                 f"[Re-Research Parse Error] "
                 f"补搜任务 {index} "
-                f"结果不是合法 JSON"
+                f"结果解析失败"
             )
 
             print(
@@ -607,6 +838,25 @@ if (
             f"{evidence_store.count()} 条"
         )
 
+if resume_stage == ResumeStage.RE_RESEARCH:
+
+    state.evidence = (
+        evidence_store.get_all()
+    )
+
+    state.status = (
+        ResearchStatus.REVISING
+    )
+
+    save_state(
+        state,
+        state_path,
+    )
+
+    resume_stage = (
+        ResumeStage.REVISION
+    )
+
 
 # ============================================================
 # Step 9: Re-Serialize Updated Evidence
@@ -622,18 +872,24 @@ for index, evidence in enumerate(
 
     updated_evidence_lines.append(
         f"""
-Evidence {index}
+    Evidence {index}
 
-Title: {evidence.title}
-Evidence Type: {evidence.evidence_type}
-Year: {evidence.year}
-Citations: {evidence.citations}
-Source: {evidence.source}
-DOI: {evidence.doi}
-URL: {evidence.url}
-Summary: {evidence.summary}
-Verified: {evidence.verified}
-"""
+    Title: {evidence.title}
+    Evidence Type: {evidence.evidence_type}
+    Authors: {", ".join(evidence.authors)}
+    Venue: {evidence.venue}
+    Published At: {evidence.published_at}
+    Year: {evidence.year}
+    Citations: {evidence.citations}
+    Source: {evidence.source}
+    DOI: {evidence.doi}
+    URL: {evidence.url}
+    Summary: {evidence.summary}
+    Query: {evidence.query}
+    Retrieved At: {evidence.retrieved_at}
+    Verified: {evidence.verified}
+    Confidence: {evidence.confidence}
+    """
     )
 
 
@@ -652,7 +908,16 @@ print(
 # Step 10: Writer Revision
 # ============================================================
 
-revision_input = f"""
+if resume_stage == ResumeStage.REVISION:
+
+    state.status = ResearchStatus.REVISING
+
+    print(
+        f"[State] Workflow status: "
+        f"{state.status.value}"
+    )
+
+    revision_input = f"""
 用户原始研究问题：
 
 {question}
@@ -691,29 +956,66 @@ Research Goal:
 7. 输出完整、可直接交付给用户的最终研究报告。
 """
 
+    print(
+        "\n[Writer] 正在基于最新 Evidence 修订报告...\n"
+    )
 
-print(
-    "\n[Writer] 正在基于补搜 Evidence 重写报告...\n"
-)
+    revised_report_text = run_writer(
+        revision_input
+    )
+
+    state.final_report = (
+        revised_report_text
+    )
+
+    state.status = (
+        ResearchStatus.FINAL_REVIEWING
+    )
+
+    save_state(
+        state,
+        state_path,
+    )
+
+    resume_stage = (
+        ResumeStage.FINAL_CRITIC
+    )
 
 
-revised_writer_result = Runner.run_sync(
-    writer_agent,
-    revision_input,
-    max_turns=3,
-)
+else:
 
+    revised_report_text = (
+        state.final_report
+    )
 
-revised_report_text = (
-    revised_writer_result.final_output
-)
+    if revised_report_text is None:
 
+        raise RuntimeError(
+            "Resume state 显示 Revision 已完成，"
+            "但 state.final_report 为空。"
+        )
+
+    print(
+        "[Resume] Writer Revision 已完成，"
+        "跳过 Revision 阶段。"
+    )
 
 # ============================================================
 # Step 11: Final Critic Review
 # ============================================================
 
-final_critic_input = f"""
+if resume_stage == ResumeStage.FINAL_CRITIC:
+
+    state.status = (
+        ResearchStatus.FINAL_REVIEWING
+    )
+
+    print(
+        f"[State] Workflow status: "
+        f"{state.status.value}"
+    )
+
+    final_critic_input = f"""
 用户原始研究问题：
 
 {question}
@@ -750,52 +1052,53 @@ Research Goal:
 必须严格按照 Critic JSON Schema 输出。
 """
 
-
-print(
-    "\n[Critic] 正在进行第二次最终审核...\n"
-)
-
-
-final_critic_result = Runner.run_sync(
-    critic_agent,
-    final_critic_input,
-    max_turns=3,
-)
-
-
-final_critic_raw = (
-    final_critic_result.final_output
-)
-
-
-try:
-
-    final_critic_data = json.loads(
-        final_critic_raw
+    print(
+        "\n[Critic] 正在进行第二次最终审核...\n"
     )
 
-    final_review = CriticReview.model_validate(
-        final_critic_data
+    try:
+
+        final_review = run_critic(
+            final_critic_input
+        )
+
+        state.final_review = (
+            final_review
+        )
+
+        save_state(
+            state,
+            state_path,
+        )
+
+    except (
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as e:
+
+        print(
+            "\n[Final Critic Parse Error] "
+            "第二次 Critic 输出解析失败"
+        )
+
+        print(
+            f"[Error] {e}"
+        )
+
+        final_review = None
+
+
+else:
+
+    final_review = (
+        state.final_review
     )
-
-
-except (
-    json.JSONDecodeError,
-    TypeError,
-    ValueError,
-) as e:
 
     print(
-        "\n[Final Critic Parse Error] "
-        "第二次 Critic 输出解析失败"
+        "[Resume] Final Critic 已完成，"
+        "跳过最终审核阶段。"
     )
-
-    print(
-        f"[Error] {e}"
-    )
-
-    final_review = None
-
 
 
 # ============================================================
@@ -900,3 +1203,60 @@ if final_review is not None:
         f"[Workflow] 最终审核结果已保存到："
         f"{critic_path}"
     )
+
+
+memory_path = os.path.join(
+    "outputs",
+    "memory.json",
+)
+
+
+memory_items = load_memory(
+    memory_path
+)
+
+
+memory_items.append(
+    MemoryItem(
+        question=question,
+
+        summary=(
+            revised_report_text[:500]
+        ),
+
+        evidence_count=(
+            evidence_store.count()
+        ),
+    )
+)
+
+
+save_memory(
+    memory_items,
+    memory_path,
+)
+
+
+print(
+    f"[Memory] 已保存研究经验，"
+    f"当前 Memory 数量："
+    f"{len(memory_items)}"
+)
+
+
+state.status = ResearchStatus.COMPLETED
+
+resume_stage = ResumeStage.DONE
+
+save_state(
+    state,
+    state_path,
+)
+
+print(
+    f"[State] Workflow status: {state.status.value}"
+)
+
+print(
+    f"[Workflow] Research State 已保存到：{state_path}"
+)

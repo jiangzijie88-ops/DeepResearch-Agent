@@ -1,6 +1,12 @@
-openai-agents
-openai
-python-dotenv
-pydantic
-requests
-ddgs
+# Versions used for the v3 validation environment (Python 3.11).
+openai-agents==0.22.0
+openai==3.3.1
+python-dotenv==1.2.3
+pydantic==2.13.4
+requests==2.34.2
+ddgs==9.15.0
+fastapi==0.141.1
+uvicorn==0.52.4
+streamlit==1.62.0
+pytest==9.1.1
+httpx==0.28.1

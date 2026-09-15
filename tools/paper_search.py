@@ -1,16 +1,16 @@
-import os
 import time
 import threading
 
-import requests
 from dotenv import load_dotenv
 from agents import function_tool
+
+from tools.academic.aggregator import (
+    search_academic_papers,
+)
 
 
 load_dotenv()
 
-
-OPENALEX_API_URL = "https://api.openalex.org/works"
 
 MAX_PAPER_SEARCHES = 3
 
@@ -18,12 +18,6 @@ _paper_search_count = 0
 _paper_search_lock = threading.Lock()
 _seen_paper_ids = set()
 _seen_paper_lock = threading.Lock()
-
-_request_lock = threading.Lock()
-
-MIN_REQUEST_INTERVAL = 1.0
-
-_last_request_time = 0.0
 
 
 def reset_paper_search_count():
@@ -36,66 +30,10 @@ def reset_paper_search_count():
         _seen_paper_ids.clear()
 
 
-def _wait_for_rate_limit():
-    """
-    Ensure OpenAlex requests are not sent too quickly.
-    """
-    global _last_request_time
-
-    with _request_lock:
-        now = time.time()
-
-        elapsed = now - _last_request_time
-
-        if elapsed < MIN_REQUEST_INTERVAL:
-            wait_time = MIN_REQUEST_INTERVAL - elapsed
-
-            print(
-                f"[Rate Limit] Waiting "
-                f"{wait_time:.2f} seconds..."
-            )
-
-            time.sleep(wait_time)
-
-        _last_request_time = time.time()
-
-
-def _reconstruct_abstract(
-    inverted_index: dict | None,
-) -> str:
-    """
-    Reconstruct plain-text abstract from
-    OpenAlex abstract_inverted_index.
-    """
-
-    if not inverted_index:
-        return ""
-
-    word_positions = []
-
-    for word, positions in inverted_index.items():
-
-        for position in positions:
-            word_positions.append(
-                (position, word)
-            )
-
-    word_positions.sort(
-        key=lambda item: item[0]
-    )
-
-    abstract = " ".join(
-        word
-        for _, word in word_positions
-    )
-
-    return abstract
-
-
-
 
 def _calculate_relevance_score(
-    work: dict,
+    title: str,
+    abstract: str | None = None,
 ) -> tuple[bool, int]:
     """
     First apply hard relevance gates,
@@ -105,28 +43,20 @@ def _calculate_relevance_score(
         (passed_hard_gate, relevance_score)
     """
 
-    title = (
-        work.get("title")
+    title_lower = (
+        title
         or ""
     ).lower()
 
-    abstract = _reconstruct_abstract(
-        work.get("abstract_inverted_index")
-    ).lower()
-
-    topics = work.get("topics") or []
-
-    topic_text = " ".join(
-        topic.get("display_name", "")
-        for topic in topics
+    abstract_lower = (
+        abstract
+        or ""
     ).lower()
 
     full_text = (
-        title
+        title_lower
         + " "
-        + abstract
-        + " "
-        + topic_text
+        + abstract_lower
     )
 
     # =========================================
@@ -198,7 +128,7 @@ def _calculate_relevance_score(
 
     # Recommendation
     if any(
-        keyword in title
+        keyword in title_lower
         for keyword in recommendation_keywords
     ):
         score += 3
@@ -207,7 +137,7 @@ def _calculate_relevance_score(
 
     # Multimodal
     if any(
-        keyword in title
+        keyword in title_lower
         for keyword in multimodal_keywords
     ):
         score += 3
@@ -216,7 +146,7 @@ def _calculate_relevance_score(
 
     # Graph / GNN
     if any(
-        keyword in title
+        keyword in title_lower
         for keyword in graph_keywords
     ):
         score += 3
@@ -225,6 +155,18 @@ def _calculate_relevance_score(
 
     return True, score
 
+def _search_academic_sources(
+    query: str,
+    start_year: int,
+    end_year: int,
+):
+    return search_academic_papers(
+        query=query,
+        year_start=start_year,
+        year_end=end_year,
+        limit_per_source=10,
+    )
+
 @function_tool
 def paper_search(
     query: str,
@@ -232,7 +174,7 @@ def paper_search(
     end_year: int,
 ) -> str:
     """
-    Search academic papers using OpenAlex.
+    Search academic papers using multiple academic sources.
 
     Args:
         query: Academic paper search query.
@@ -287,141 +229,60 @@ def paper_search(
     )
     print("=" * 60)
 
-    api_key = os.getenv("OPENALEX_API_KEY")
-
-    if not api_key:
-        print("[Tool Error] OPENALEX_API_KEY not found.")
-
-        return (
-            "OpenAlex API key is missing. "
-            "Academic metadata cannot be verified."
-        )
-
     # =========================================
-    # Hard year filtering in OpenAlex  是否有资格进入候选集
-    # =========================================
-    openalex_filter = (
-        f"from_publication_date:{start_year}-01-01,"
-        f"to_publication_date:{end_year}-12-31"
-    )
-
-    params = {
-        "search": query,
-        "filter": openalex_filter,
-        "per_page": 10,
-        "sort": "relevance_score:desc",
-        "api_key": api_key,
-    }
-
-    # =========================================
-    # Retry with backoff
-    # =========================================
-    max_retries = 3
-
-    response = None
-
-    for attempt in range(max_retries):
-
-        _wait_for_rate_limit()
-
-        try:
-
-            response = requests.get(
-                OPENALEX_API_URL,
-                params=params,
-                timeout=15,
-            )
-
-            if response.status_code == 429:
-
-                wait_seconds = 2 ** attempt
-
-                print(
-                    f"[OpenAlex 429] Rate limited. "
-                    f"Retrying in {wait_seconds} seconds..."
-                )
-
-                time.sleep(wait_seconds)
-
-                continue
-
-            response.raise_for_status()
-
-            break
-
-        except requests.RequestException as e:
-
-            print(
-                f"[OpenAlex Error] "
-                f"Attempt {attempt + 1}/{max_retries}: {e}"
-            )
-
-            if attempt == max_retries - 1:
-                return (
-                    "Academic paper search failed. "
-                    "Do not invent metadata."
-                )
-
-            wait_seconds = 2 ** attempt
-
-            print(
-                f"[Retry] Waiting "
-                f"{wait_seconds} seconds..."
-            )
-
-            time.sleep(wait_seconds)
-
-    if response is None or response.status_code == 429:
-
-        print(
-            "[Tool Error] OpenAlex is still rate limited "
-            "after retries."
-        )
-
-        return (
-            "OpenAlex remained rate-limited. "
-            "Citation data could not be verified."
-        )
-
-    # =========================================
-    # Parse result
+    # Search OpenAlex through provider
     # =========================================
     try:
-        data = response.json()
-
-    except ValueError:
-
-        print("[Tool Error] Invalid JSON from OpenAlex.")
-
-        return (
-            "OpenAlex returned invalid data."
+        papers = _search_academic_sources(
+            query=query,
+            start_year=start_year,
+            end_year=end_year,
         )
 
-    works = data.get("results", [])
+    except RuntimeError as e:
 
-    if not works:
-        print("[Tool Result] No papers found.")
-        return "No academic papers found."
+        print(
+            f"[Academic Search Error] {e}"
+        )
+
+        return (
+            "All academic paper search providers "
+            "failed. Do not invent metadata."
+        )
+
+
+    if not papers:
+        print(
+            "[Tool Result] "
+            "No academic papers found."
+        )
+
+        return (
+            "No academic papers found."
+        )
 
     # =========================================
     # Topic relevance filtering
     # =========================================
-    relevant_works = []
+    relevant_papers = []
 
-    for work in works:
+    for paper in papers:
 
-        title = work.get("title") or ""
+        title = paper.title or ""
 
-        year = work.get("publication_year")
+        year = paper.year
 
-        if not year:
+        if year is None:
             continue
 
         if year < start_year or year > end_year:
             continue
 
         passed_hard_gate, relevance_score = (
-            _calculate_relevance_score(work)
+            _calculate_relevance_score(
+                title=paper.title,
+                abstract=paper.abstract,
+            )
         )
 
         if not passed_hard_gate:
@@ -432,21 +293,37 @@ def paper_search(
             )
             continue
 
-        work["_relevance_score"] = relevance_score
+        paper_with_score = (
+            paper,
+            relevance_score,
+        )
 
         # =========================================
         # Deduplicate papers across search calls
         # =========================================
-        doi = work.get("doi")
+        doi = paper.doi
 
         if doi:
-            paper_id = doi.lower()
+            paper_id = (
+                doi
+                .strip()
+                .lower()
+            )
+
+        elif paper.url:
+            paper_id = (
+                paper.url
+                .strip()
+                .lower()
+                .rstrip("/")
+            )
+
         else:
             paper_id = (
-                work.get("id")
-                or title
-                or ""
-            ).lower()
+                f"{paper.title}|{paper.year}"
+                .strip()
+                .lower()
+            )
 
         with _seen_paper_lock:
 
@@ -459,86 +336,87 @@ def paper_search(
 
             _seen_paper_ids.add(paper_id)
 
-        relevant_works.append(work)
+        relevant_papers.append(
+            paper_with_score
+        )
 
-    relevant_works.sort(
-        key=lambda work: work.get(
-            "_relevance_score",
-            0,
-        ),
+    relevant_papers.sort(
+        key=lambda item: item[1],
         reverse=True,
     )
 
-    if not relevant_works:
+    if not relevant_papers:
 
         print(
-            "[Tool Result] Papers were returned by OpenAlex, "
+            "[Tool Result] Academic papers were returned, "
             "but none passed relevance filtering."
         )
 
         return (
-            "OpenAlex returned papers, "
+            "Academic search returned papers, "
             "but none matched the requested topic "
             "after year and relevance filtering."
         )
 
     # 最终最多返回 5 篇
-    relevant_works = relevant_works[:5]
+    relevant_papers = relevant_papers[:5]
 
     formatted_results = []
 
-    for i, work in enumerate(
-        relevant_works,
+    for i, item in enumerate(
+        relevant_papers,
         start=1,
     ):
 
-        title = work.get("title") or "Unknown title"
+        paper, relevance_score = item
 
-        year = (
-            work.get("publication_year")
-            or "Unknown year"
+        title = (
+            paper.title
+            or "Unknown title"
         )
 
-        citations = work.get("cited_by_count")
+        year = (
+            paper.year
+            if paper.year is not None
+            else "Unknown year"
+        )
+
+        published_at = (
+            paper.published_at
+            or "Unknown publication date"
+        )
+
+        citations = paper.citations
 
         if citations is None:
             citation_text = "Unknown"
         else:
-            citation_text = str(citations)
+            citation_text = str(
+                citations
+            )
 
-        relevance_score = work.get(
-            "_relevance_score",
-            0,
+        doi = (
+            paper.doi
+            or "No DOI"
         )
 
-        doi = work.get("doi") or "No DOI"
-
-        authorships = work.get("authorships", [])
-
-        authors = []
-
-        for authorship in authorships[:5]:
-
-            author = authorship.get("author") or {}
-
-            name = author.get("display_name")
-
-            if name:
-                authors.append(name)
-
-        if authors:
-            author_text = ", ".join(authors)
+        if paper.authors:
+            author_text = ", ".join(
+                paper.authors[:5]
+            )
         else:
-            author_text = "Unknown authors"
+            author_text = (
+                "Unknown authors"
+            )
 
-        primary_location = (
-            work.get("primary_location")
-            or {}
+        venue = (
+            paper.venue
+            or "Unknown venue"
         )
 
         url = (
-            primary_location.get("landing_page_url")
-            or doi
+            paper.url
+            or paper.doi
             or "No URL"
         )
 
@@ -547,8 +425,12 @@ def paper_search(
             f"Title: {title}\n"
             f"Authors: {author_text}\n"
             f"Year: {year}\n"
+            f"Published At: {published_at}\n"
+            f"Venue: {venue}\n"
             f"Citations: {citation_text}\n"
-            f"Relevance Score: {relevance_score}\n"
+            f"Relevance Score: "
+            f"{relevance_score}\n"
+            f"Source: {paper.source}\n"
             f"DOI: {doi}\n"
             f"URL: {url}\n"
         )
