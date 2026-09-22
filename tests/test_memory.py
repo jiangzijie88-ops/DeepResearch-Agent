@@ -1,11 +1,9 @@
-from memory.memory_item import (
+from memory import (
     MemoryItem,
+    save_memory,
+    load_memory,
+    build_memory_context,
 )
-
-from memory.memory_store import (
-    MemoryStore,
-)
-
 
 
 def test_memory_item_default_values():
@@ -14,86 +12,18 @@ def test_memory_item_default_values():
         question="test"
     )
 
-
-    assert (
-        item.question
-        ==
-        "test"
-    )
+    assert item.question == "test"
+    assert item.evidence_count == 0
 
 
-    assert (
-        item.evidence_count
-        ==
-        0
-    )
-
-
-
-def test_memory_store_add():
-
-    store = MemoryStore()
-
-
-    item = MemoryItem(
-        question=
-        "GNN multimodal recommendation"
-    )
-
-
-    store.add(
-        item
-    )
-
-
-    assert len(store) == 1
-
-
-
-def test_memory_store_keyword_search():
-
-    store = MemoryStore()
-
-
-    store.add(
-        MemoryItem(
-            question=
-            "Graph Neural Network Recommendation"
-        )
-    )
-
-
-    store.add(
-        MemoryItem(
-            question=
-            "Large Language Model"
-        )
-    )
-
-
-    results = store.search(
-        "Graph"
-    )
-
-
-    assert len(results)==1
-
-
-
-def test_memory_can_save_and_load(tmp_path):
-
-    from memory.memory_storage import (
-        save_memory,
-        load_memory,
-    )
-
+def test_memory_can_save_and_load(
+    tmp_path,
+):
 
     path = (
         tmp_path
-        /
-        "memory.json"
+        / "memory.json"
     )
-
 
     item = MemoryItem(
         question="test memory",
@@ -101,23 +31,87 @@ def test_memory_can_save_and_load(tmp_path):
         evidence_count=3,
     )
 
-
     save_memory(
         [item],
         path,
     )
 
-
     loaded = load_memory(
-        path,
+        path
     )
 
-
-    assert len(loaded)==1
-
+    assert len(loaded) == 1
 
     assert (
         loaded[0].question
+        == "test memory"
+    )
+
+    assert (
+        loaded[0].summary
+        == "hello"
+    )
+
+    assert (
+        loaded[0].evidence_count
+        == 3
+    )
+
+
+def test_build_memory_context():
+
+    memories = [
+        MemoryItem(
+            question=(
+                "Graph Neural Network "
+                "Recommendation"
+            ),
+            summary=(
+                "Research about GNN "
+                "recommendation."
+            ),
+            evidence_count=5,
+        ),
+        MemoryItem(
+            question=(
+                "Large Language Model"
+            ),
+            summary="LLM research.",
+            evidence_count=3,
+        ),
+    ]
+
+    context = build_memory_context(
+        memories,
+        "Graph",
+    )
+
+    assert (
+        "Graph Neural Network"
+        in context
+    )
+
+    assert (
+        "Evidence Count:"
+        in context
+    )
+
+
+def test_build_memory_context_no_match():
+
+    memories = [
+        MemoryItem(
+            question="Large Language Model"
+        )
+    ]
+
+    context = build_memory_context(
+        memories,
+        "Graph",
+    )
+
+    assert (
+        context
         ==
-        "test memory"
+        "No previous research memory found."
     )

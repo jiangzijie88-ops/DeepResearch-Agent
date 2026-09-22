@@ -1,8 +1,26 @@
 """Offline test defaults: never load developer secrets or call real HTTP APIs."""
 
+import sys
+from pathlib import Path
+
 import httpx
 import pytest
 import requests
+
+
+# 将项目根目录加入 Python 模块搜索路径。
+# 保证 pytest 可以正常导入：
+# models
+# workflow
+# workers
+# tools
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(
+        0,
+        str(PROJECT_ROOT),
+    )
 
 
 def pytest_configure(config):

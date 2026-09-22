@@ -58,12 +58,40 @@ def test_pipeline_merges_duplicate_evidence_before_writing(pipeline_case):
     assert evidence[0]["citations"] == 8
 
 
-def test_pipeline_completes_even_when_critic_requests_revision(pipeline_case):
-    state = pipeline.run_research_pipeline("测试问题")
-    assert state.status == ResearchStatus.COMPLETED
-    assert state.draft_report == "# 测试报告"
-    assert state.critic_review.needs_research is True
-    assert state.final_review is None
+def test_pipeline_completes_even_when_critic_requests_revision(
+    pipeline_case
+):
+
+    state = (
+        pipeline.run_research_pipeline(
+            "测试问题"
+        )
+    )
+
+    assert (
+        state.status
+        == ResearchStatus.COMPLETED
+    )
+
+    assert (
+        state.draft_report
+        == "# 测试报告"
+    )
+
+    assert (
+        state.final_report
+        == "# 测试报告"
+    )
+
+    assert (
+        state.critic_review.needs_research
+        is True
+    )
+
+    assert (
+        state.final_review
+        is not None
+    )
 
 
 def test_pipeline_resets_both_budgets_before_each_query(pipeline_case):

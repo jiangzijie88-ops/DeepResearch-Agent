@@ -1,198 +1,801 @@
 import json
+from pathlib import Path
+
+from memory import (
+    MemoryItem,
+    build_memory_context,
+    load_memory,
+    save_memory,
+)
 
 from models.evidence_store import EvidenceStore
 from models.research_state import (
     ResearchState,
     ResearchStatus,
 )
+from models.state_store import save_state
 
-
-from workflow.stages import (
-    run_planner,
-    run_research_query,
-    run_writer,
-    run_critic,
+from tools.paper_search import (
+    reset_paper_search_count,
 )
-
 from tools.web_search import (
     reset_search_count,
 )
 
-from tools.paper_search import (
-    reset_paper_search_count,
+from workflow.resume import (
+    ResumeStage,
+    get_resume_stage,
+)
+from workflow.stages import (
+    run_critic,
+    run_planner,
+    run_research_query,
+    run_writer,
 )
 
 
 def emit(
     callback,
     message: str,
-):
+) -> None:
+    """
+    向 API / Streamlit 等调用方发送 Workflow 事件。
+    """
 
     if callback:
-
         callback(message)
 
 
-def run_research_pipeline(
-    question: str,
-    callback=None,
-):
+def checkpoint(
+    state: ResearchState,
+    state_path: str | Path | None,
+) -> None:
+    """
+    如果提供 checkpoint 路径，
+    保存当前 ResearchState。
+    """
 
-    state = ResearchState(
-        question=question,
+    if state_path:
+        save_state(
+            state,
+            state_path,
+        )
+
+
+def serialize_evidence(
+    evidence_list,
+) -> str:
+    """
+    将 Evidence 序列化为 JSON，
+    供 Writer 和 Critic 使用。
+    """
+
+    data = []
+
+    for evidence in evidence_list:
+        data.append(
+            evidence.model_dump()
+        )
+
+    return json.dumps(
+        data,
+        ensure_ascii=False,
+        indent=2,
+        default=str,
     )
 
 
-    # ======================
-    # Step 1 Planner
-    # ======================
-    emit(
-        callback,
-        "Planner started",
-    )
-
-    plan = run_planner(
-        question
-    )
-
-
-    state.plan = plan
+def run_research_tasks(
+    plan,
+    evidence_store: EvidenceStore,
+    state: ResearchState,
+) -> None:
+    """
+    执行 Planner 生成的所有研究子问题。
+    """
 
     state.status = (
-        ResearchStatus.PLANNED
-    )
-
-
-    # ======================
-    # Step 2 Research
-    # ======================
-
-    evidence_store = EvidenceStore()
-    state.status = ResearchStatus.RESEARCHING
-
-    emit(
-        callback,
-        "Researcher started",
+        ResearchStatus.RESEARCHING
     )
 
     for sub_question in (
         plan.sub_questions
     ):
 
+        state.tool_routes[
+            str(sub_question.id)
+        ] = [
+            sub_question.search_type.value
+        ]
 
-        # 每个研究子问题使用独立 Tool Budget
+        # 每一个任务拥有独立 Tool Budget
         reset_search_count()
         reset_paper_search_count()
 
-        emit(
-            callback,
-            (
-                f"Researching sub-question "
-                f"{sub_question.id}: "
-                f"{sub_question.question}"
-            ),
-        )
+        try:
 
+            evidence_list = (
+                run_research_query(
+                    query=(
+                        sub_question.question
+                    ),
+                    search_type=(
+                        sub_question.search_type
+                    ),
+                )
+            )
 
-        results = run_research_query(
-            query=sub_question.question,
+        except (
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
 
-            search_type=(
-                sub_question.search_type
-            ),
-        )
+            print(
+                f"[Evidence Parse Error] "
+                f"子问题 {sub_question.id} "
+                f"返回结果解析失败: {exc}"
+            )
 
+            evidence_list = []
 
         evidence_store.add_many(
-            results
+            evidence_list
         )
 
-
-    state.evidence = evidence_store.get_all()
-
-
-    state.status = (
-        ResearchStatus.WRITING
+    state.evidence = (
+        evidence_store.get_all()
     )
 
 
-    # ======================
-    # Step 3 Writer
-    # ======================
-    emit(
-        callback,
-        "Writer started",
-    )
-
-
-    evidence_json = json.dumps(
-        [item.model_dump(mode="json") for item in state.evidence],
-        ensure_ascii=False,
-        indent=2,
-    )
-
-    writer_prompt = f"""
-    请根据下面的研究问题和收集到的证据，
-    生成结构化 Research Report。
-
-    ====================
-    研究问题
-    ====================
-
-    {question}
-
-
-    ====================
-    Evidence
-    ====================
-
-    {evidence_json}
-
-
-    要求：
-
-    1. 明确回答研究问题。
-    2. 总结核心发现。
-    3. 如果包含论文，请列出：
-      - 标题
-      - 作者
-      - 年份
-      - 引用量
-      - 来源
-    4. 不要编造不存在的信息。
-    5. 输出完整研究报告。
+def run_additional_research(
+    review,
+    evidence_store: EvidenceStore,
+    state: ResearchState,
+) -> None:
+    """
+    根据 Critic 给出的 research_queries
+    执行补充搜索。
     """
 
+    state.status = (
+        ResearchStatus.RE_RESEARCHING
+    )
 
-    report = run_writer(
-        writer_prompt
+    state.research_round += 1
+
+    # 一轮最多补搜 3 个问题
+    for query in (
+        review.research_queries[:3]
+    ):
+
+        reset_search_count()
+        reset_paper_search_count()
+
+        try:
+
+            evidence_list = (
+                run_research_query(
+                    query
+                )
+            )
+
+        except (
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+
+            print(
+                "[Re-Research Parse Error] "
+                f"{exc}"
+            )
+
+            evidence_list = []
+
+        evidence_store.add_many(
+            evidence_list
+        )
+
+    state.evidence = (
+        evidence_store.get_all()
     )
 
 
-    state.draft_report = report
+def run_research_pipeline(
+    question: str | None = None,
+    callback=None,
+    *,
+    state: ResearchState | None = None,
+    state_path: str | Path | None = None,
+    memory_path: str | Path | None = None,
+) -> ResearchState:
+    """
+    DeepResearch 完整 Workflow。
 
+    支持：
+    - 新任务
+    - Resume
+    - Planner
+    - Researcher
+    - Evidence Store
+    - Writer
+    - Critic
+    - Critic-guided re-research
+    - Revision
+    - Final Critic
+    - Memory
+    - Checkpoint
+    """
 
-    # ======================
-    # Step 4 Critic
-    # ======================
-    emit(
-        callback,
-        "Critic started",
+    # ========================================================
+    # Initialize / Resume
+    # ========================================================
+
+    if state is None:
+
+        if not question:
+
+            raise ValueError(
+                "question 不能为空"
+            )
+
+        state = ResearchState(
+            question=question
+        )
+
+    else:
+
+        question = state.question
+
+    resume_stage = (
+        get_resume_stage(
+            state
+        )
     )
-    
-    state.status = ResearchStatus.REVIEWING
 
-    review = run_critic(
-        report
+    if (
+        resume_stage
+        == ResumeStage.DONE
+    ):
+        return state
+
+    # ========================================================
+    # 1. Planner
+    # ========================================================
+
+    if (
+        resume_stage
+        == ResumeStage.PLANNER
+    ):
+
+        emit(
+            callback,
+            "Planner started",
+        )
+
+        memory_context = ""
+
+        if memory_path:
+
+            memory_context = (
+                build_memory_context(
+                    load_memory(
+                        memory_path
+                    ),
+                    state.question,
+                )
+            )
+
+        if memory_context:
+
+            state.plan = run_planner(
+                state.question,
+                memory_context=(
+                    memory_context
+                ),
+            )
+
+        else:
+
+            state.plan = run_planner(
+                state.question
+            )
+
+        state.status = (
+            ResearchStatus.PLANNED
+        )
+
+        checkpoint(
+            state,
+            state_path,
+        )
+
+        resume_stage = (
+            ResumeStage.RESEARCH
+        )
+
+    plan = state.plan
+
+    if plan is None:
+
+        raise RuntimeError(
+            "state.plan 为空，"
+            "无法继续 Workflow"
+        )
+
+    # ========================================================
+    # Evidence Store
+    # ========================================================
+
+    evidence_store = (
+        EvidenceStore()
     )
 
+    # Resume 时恢复旧证据
+    evidence_store.add_many(
+        state.evidence
+    )
 
-    state.critic_review = review
+    # ========================================================
+    # 2. Research
+    # ========================================================
 
+    if (
+        resume_stage
+        == ResumeStage.RESEARCH
+    ):
+
+        emit(
+            callback,
+            "Researcher started",
+        )
+
+        for sub_question in (
+            plan.sub_questions
+        ):
+
+            emit(
+                callback,
+                (
+                    "Researching "
+                    f"sub-question "
+                    f"{sub_question.id}: "
+                    f"{sub_question.question}"
+                ),
+            )
+
+        run_research_tasks(
+            plan,
+            evidence_store,
+            state,
+        )
+
+        checkpoint(
+            state,
+            state_path,
+        )
+
+        resume_stage = (
+            ResumeStage.WRITER
+        )
+
+    state.evidence = (
+        evidence_store.get_all()
+    )
+
+    evidence_text = (
+        serialize_evidence(
+            state.evidence
+        )
+    )
+
+    # ========================================================
+    # 3. Writer
+    # ========================================================
+
+    if (
+        resume_stage
+        == ResumeStage.WRITER
+    ):
+
+        emit(
+            callback,
+            "Writer started",
+        )
+
+        state.status = (
+            ResearchStatus.WRITING
+        )
+
+        writer_input = f"""
+用户原始研究问题：
+
+{state.question}
+
+
+Research Goal：
+
+{plan.research_goal}
+
+
+以下是 Researcher 收集并经过
+Evidence Store 去重后的证据。
+
+你只能基于这些证据撰写报告。
+
+不要执行搜索。
+不要编造 Evidence 中不存在的事实。
+
+
+{evidence_text}
+"""
+
+        state.draft_report = (
+            run_writer(
+                writer_input
+            )
+        )
+
+        checkpoint(
+            state,
+            state_path,
+        )
+
+        resume_stage = (
+            ResumeStage.CRITIC
+        )
+
+    report_text = (
+        state.draft_report
+    )
+
+    if report_text is None:
+
+        raise RuntimeError(
+            "state.draft_report 为空，"
+            "无法继续 Workflow"
+        )
+
+    # ========================================================
+    # 4. Critic
+    # ========================================================
+
+    review = (
+        state.critic_review
+    )
+
+    if (
+        resume_stage
+        == ResumeStage.CRITIC
+    ):
+
+        emit(
+            callback,
+            "Critic started",
+        )
+
+        state.status = (
+            ResearchStatus.REVIEWING
+        )
+
+        critic_input = f"""
+用户原始研究问题：
+
+{state.question}
+
+
+Research Goal：
+
+{plan.research_goal}
+
+
+Evidence：
+
+{evidence_text}
+
+
+Research Report：
+
+{report_text}
+
+
+请严格审核这份 Research Report。
+
+重点检查：
+
+1. 是否回答用户的问题。
+2. 是否超出时间范围或主题范围。
+3. 重要事实是否有 Evidence 支持。
+4. 是否使用未验证 Evidence 作为确定事实。
+5. 是否存在过度推断。
+6. 是否把“当前检索到”写成“全部”。
+7. 是否把“没有检索到”写成“不存在”。
+8. 论文信息是否与 Evidence 一致。
+9. 是否需要补充搜索。
+
+你只负责审核，不要搜索。
+"""
+
+        try:
+
+            review = run_critic(
+                critic_input
+            )
+
+            state.critic_review = (
+                review
+            )
+
+        except (
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+
+            print(
+                "[Critic Parse Error] "
+                f"{exc}"
+            )
+
+            review = None
+
+        checkpoint(
+            state,
+            state_path,
+        )
+
+    if (
+        review is not None
+        and review.needs_research
+    ):
+
+        resume_stage = (
+            ResumeStage.RE_RESEARCH
+        )
+
+    else:
+
+        resume_stage = (
+            ResumeStage.REVISION
+        )
+
+    # ========================================================
+    # 5. Additional Research
+    # ========================================================
+
+    if (
+        resume_stage
+        == ResumeStage.RE_RESEARCH
+    ):
+
+        run_additional_research(
+            review,
+            evidence_store,
+            state,
+        )
+
+        state.status = (
+            ResearchStatus.REVISING
+        )
+
+        checkpoint(
+            state,
+            state_path,
+        )
+
+        resume_stage = (
+            ResumeStage.REVISION
+        )
+
+    state.evidence = (
+        evidence_store.get_all()
+    )
+
+    updated_evidence_text = (
+        serialize_evidence(
+            state.evidence
+        )
+    )
+
+    critic_raw_output = (
+        review.model_dump_json(
+            indent=2
+        )
+        if review is not None
+        else "{}"
+    )
+
+    # ========================================================
+    # 6. Writer Revision
+    # ========================================================
+
+    if (
+        resume_stage
+        == ResumeStage.REVISION
+    ):
+
+        state.status = (
+            ResearchStatus.REVISING
+        )
+
+        revision_input = f"""
+用户原始研究问题：
+
+{state.question}
+
+
+Research Goal：
+
+{plan.research_goal}
+
+
+最新 Evidence Store：
+
+{updated_evidence_text}
+
+
+Writer 第一版 Research Report：
+
+{report_text}
+
+
+Critic 第一轮审核：
+
+{critic_raw_output}
+
+
+请基于最新 Evidence 修订报告。
+
+要求：
+
+1. 优先解决 Critic 指出的问题。
+2. 使用新增 Evidence。
+3. 不要编造 Evidence 中不存在的信息。
+4. verified=false 的内容谨慎表述。
+5. 如果证据仍不足，应明确说明。
+6. 输出完整最终研究报告。
+"""
+
+        state.final_report = (
+            run_writer(
+                revision_input
+            )
+        )
+
+        state.status = (
+            ResearchStatus.FINAL_REVIEWING
+        )
+
+        checkpoint(
+            state,
+            state_path,
+        )
+
+        resume_stage = (
+            ResumeStage.FINAL_CRITIC
+        )
+
+    final_report = (
+        state.final_report
+    )
+
+    if final_report is None:
+
+        raise RuntimeError(
+            "state.final_report 为空，"
+            "无法继续 Workflow"
+        )
+
+    # ========================================================
+    # 7. Final Critic
+    # ========================================================
+
+    if (
+        resume_stage
+        == ResumeStage.FINAL_CRITIC
+    ):
+
+        final_critic_input = f"""
+用户原始研究问题：
+
+{state.question}
+
+
+Research Goal：
+
+{plan.research_goal}
+
+
+最新 Evidence Store：
+
+{updated_evidence_text}
+
+
+Writer 修订后的 Research Report：
+
+{final_report}
+
+
+请进行最终审核。
+
+重点检查：
+
+1. 第一轮 Critic 的问题是否已解决。
+2. Evidence 是否被正确使用。
+3. 是否仍有事实错误。
+4. 是否超出研究范围。
+5. 是否存在无证据结论。
+6. 是否存在过度推断。
+7. 是否仍有 Evidence Gap。
+
+必须按照 Critic JSON Schema 输出。
+"""
+
+        try:
+
+            state.final_review = (
+                run_critic(
+                    final_critic_input
+                )
+            )
+
+        except (
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+
+            print(
+                "[Final Critic Parse Error] "
+                f"{exc}"
+            )
+
+            state.final_review = None
+
+    # ========================================================
+    # Complete
+    # ========================================================
 
     state.status = (
         ResearchStatus.COMPLETED
     )
+
+    checkpoint(
+        state,
+        state_path,
+    )
+
+    # ========================================================
+    # Memory
+    # ========================================================
+
+    if memory_path:
+
+        memory_items = (
+            load_memory(
+                memory_path
+            )
+        )
+
+        memory_items.append(
+            MemoryItem(
+                question=(
+                    state.question
+                ),
+                summary=(
+                    final_report[:500]
+                ),
+                evidence_count=(
+                    len(state.evidence)
+                ),
+            )
+        )
+
+        save_memory(
+            memory_items,
+            memory_path,
+        )
 
     emit(
         callback,
@@ -200,3 +803,61 @@ def run_research_pipeline(
     )
 
     return state
+
+
+def save_run_outputs(
+    state: ResearchState,
+    output_dir: str | Path,
+    timestamp: str,
+) -> tuple[
+    Path,
+    Path | None,
+]:
+    """
+    保存最终 Report 和 Critic Review。
+    """
+
+    output_dir = Path(
+        output_dir
+    )
+
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    report_path = (
+        output_dir
+        / f"report_{timestamp}.md"
+    )
+
+    report_path.write_text(
+        state.final_report or "",
+        encoding="utf-8",
+    )
+
+    critic_path = None
+
+    if (
+        state.final_review
+        is not None
+    ):
+
+        critic_path = (
+            output_dir
+            / f"critic_{timestamp}.json"
+        )
+
+        critic_path.write_text(
+            json.dumps(
+                state.final_review.model_dump(),
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    return (
+        report_path,
+        critic_path,
+    )

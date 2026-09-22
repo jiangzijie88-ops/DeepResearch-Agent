@@ -16,7 +16,7 @@ from workflow.tool_router import (
 )
 
 
-from workers.researcher_factory import (
+from workers.researcher import (
     create_researcher_agent,
 )
 
@@ -343,3 +343,39 @@ def run_research_query(
 
 
     return evidence_list
+
+
+
+
+def run_research_stage(
+    plan: ResearchPlan,
+    runner=Runner,
+) -> list[Evidence]:
+    """
+    执行 ResearchPlan 中的全部子问题，
+    汇总所有 Evidence。
+    """
+
+    all_evidence: list[Evidence] = []
+
+    for sub_question in (
+        plan.sub_questions
+    ):
+
+        evidence_list = (
+            run_research_query(
+                query=(
+                    sub_question.question
+                ),
+                search_type=(
+                    sub_question.search_type
+                ),
+                runner=runner,
+            )
+        )
+
+        all_evidence.extend(
+            evidence_list
+        )
+
+    return all_evidence

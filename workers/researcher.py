@@ -1,16 +1,12 @@
 from agents import Agent
 
 from llm import get_model
+from models.search_type import SearchType
 
 from tools.web_search import web_search
 from tools.paper_search import paper_search
 
-from skills.loader import load_skill
 
-
-academic_search_skill = load_skill(
-    "academic_search"
-)
 
 
 RESEARCHER_INSTRUCTIONS = f"""
@@ -191,22 +187,82 @@ IMPORTANT FALLBACK
 
 
 =========================
-ACADEMIC SEARCH SKILL
+ACADEMIC SEARCH RULES
 =========================
 
-{academic_search_skill}
+当任务涉及学术论文、文献综述、发表信息、
+引用量、作者、会议期刊或 DOI 时：
+
+1. 优先使用 paper_search。
+2. 根据用户问题提取明确的时间范围。
+3. 搜索关键词应尽量具体，不要使用过于宽泛的查询。
+4. 不要重复执行语义基本相同的搜索。
+5. 学术论文必须与当前研究主题真正相关，
+   不能仅因为包含某一个关键词就保留。
+6. 引用量必须来自检索工具，不允许估计。
+7. DOI、作者、Venue、年份等元数据
+   无法验证时必须返回 null 或空列表。
+8. 优先级：
+   - 学术数据库
+   - 官方会议/期刊页面
+   - arXiv
+   - 作者或官方 GitHub
+   - 普通网页
 """
 
 
-researcher_agent = Agent(
-    name="Researcher",
+def create_researcher_agent(
+    search_type: SearchType,
+) -> Agent:
+    """
+    根据 Planner 指定的搜索类型，
+    创建只拥有对应工具权限的 Researcher Agent。
+    """
 
-    instructions=RESEARCHER_INSTRUCTIONS,
+    if isinstance(
+        search_type,
+        str,
+    ):
+        search_type = SearchType(
+            search_type
+        )
 
-    model=get_model(),
+    if (
+        search_type
+        == SearchType.PAPER_SEARCH
+    ):
+        tools = [
+            paper_search,
+        ]
 
-    tools=[
-        web_search,
-        paper_search,
-    ],
-)
+    elif (
+        search_type
+        == SearchType.WEB_SEARCH
+    ):
+        tools = [
+            web_search,
+        ]
+
+    elif (
+        search_type
+        == SearchType.HYBRID
+    ):
+        tools = [
+            paper_search,
+            web_search,
+        ]
+
+    else:
+        raise ValueError(
+            "Unsupported search type: "
+            f"{search_type}"
+        )
+
+    return Agent(
+        name="Researcher",
+        instructions=(
+            RESEARCHER_INSTRUCTIONS
+        ),
+        model=get_model(),
+        tools=tools,
+    )

@@ -3,10 +3,9 @@ from workers.planner import ResearchPlan, ResearchSubQuestion
 from models.evidence import Evidence
 from models.critic_review import CriticReview, CriticIssue
 
-from memory.memory_item import (
+from memory import (
     MemoryItem,
 )
-
 
 
 def test_research_state_default_values():
@@ -254,7 +253,7 @@ def test_research_state_can_store_tool_routes():
 
 def test_build_memory_context():
 
-    from memory.memory_context import (
+    from memory import (
         build_memory_context,
     )
 
@@ -289,7 +288,7 @@ def test_build_memory_context():
 
 def test_build_memory_context_empty():
 
-    from memory.memory_context import (
+    from memory import (
         build_memory_context,
     )
 

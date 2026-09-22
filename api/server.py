@@ -74,8 +74,9 @@ def research(
 
 
       report=(
-          state.draft_report
-          or "No report generated."
+        state.final_report
+        or state.draft_report
+        or "No report generated."
       ),
 
 
@@ -134,9 +135,11 @@ def research_stream(
         yield (
             json.dumps(
                 {
-                    "final_report":
-                    state.draft_report
-                    or ""
+                    "final_report": (
+                        state.final_report
+                        or state.draft_report
+                        or ""
+                    )
                 },
                 ensure_ascii=False,
             )

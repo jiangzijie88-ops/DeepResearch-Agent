@@ -1,6 +1,6 @@
 from models.search_type import SearchType
 
-from workers.researcher_factory import (
+from workers.researcher import (
     create_researcher_agent,
 )
 

@@ -30,8 +30,12 @@ def test_stream_endpoint_exists(
 
         class State:
 
-            draft_report = (
+            final_report = (
                 "fake report"
+            )
+
+            draft_report = (
+                "fake draft report"
             )
 
 

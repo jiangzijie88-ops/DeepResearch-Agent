@@ -7,7 +7,7 @@ from workers.planner import (
     ResearchSubQuestion,
 )
 
-from workflow.research_stage import (
+from workflow.stages import (
     run_research_stage,
 )
 
@@ -72,7 +72,7 @@ def test_research_stage_calls_each_sub_question(
 
 
     monkeypatch.setattr(
-        "workflow.research_stage.run_research_query",
+        "workflow.stages.run_research_query",
         fake_run_research_query,
     )
 
