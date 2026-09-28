@@ -1,12 +1,12 @@
-from agents import Agent
+from langchain_core.messages import SystemMessage
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import Runnable
 
 from llm import get_model
 
 
-writer_agent = Agent(
-    name="Research Writer",
-
-    instructions="""
+WRITER_INSTRUCTIONS = """
 你是 DeepResearch 系统中的 Writer Agent。
 
 你的职责是根据已经收集到的研究证据生成结构化研究报告。
@@ -44,7 +44,15 @@ writer_agent = Agent(
 ## 局限性
 
 如果用户的问题非常具体，可以适当调整结构，但必须保持清晰。
-""",
+"""
 
-    model=get_model(),
-)
+
+writer_prompt = ChatPromptTemplate.from_messages([
+    SystemMessage(content=WRITER_INSTRUCTIONS),
+    ("human", "{prompt}"),
+])
+
+
+def create_writer_chain() -> Runnable[dict[str, str], str]:
+    """Create Prompt -> Chat Model -> string output without search tools."""
+    return writer_prompt | get_model() | StrOutputParser()

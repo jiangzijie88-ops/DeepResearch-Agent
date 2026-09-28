@@ -1,381 +1,94 @@
-import json
+"""Adapt LangChain role calls to the custom workflow domain objects."""
 
+import json
 from datetime import datetime, timezone
 
-from agents import Runner
-
-
-from workers.planner import (
-    planner_agent,
-    ResearchPlan,
-)
-
-
-from workflow.tool_router import (
-    ToolRouter,
-)
-
-
-from workers.researcher import (
-    create_researcher_agent,
-)
-
-
-from workers.writer import (
-    writer_agent,
-)
-
-
-from workers.critic import (
-    critic_agent,
-)
-
-
+from workers.planner import create_planner_chain, ResearchPlan
+from workers.researcher import create_researcher_agent
+from workers.writer import create_writer_chain
+from workers.critic import create_critic_chain
 from models.evidence import Evidence
+from models.critic_review import CriticReview
+from models.search_type import SearchType
 
-
-from models.critic_review import (
-    CriticReview,
-)
-
-
-from models.search_type import (
-    SearchType,
-)
-
-def safe_json_loads(
-    text: str,
-):
-
+def safe_json_loads(text: str):
     text = text.strip()
-
     if not text:
-
-        return {
-            "evidence": []
-        }
-
-    if "```json" in text:
-
-        text = (
-            text
-            .split("```json", 1)[1]
-            .split("```", 1)[0]
-            .strip()
-        )
-
-
-    elif "```" in text:
-
-        text = (
-            text
-            .split("```", 1)[1]
-            .split("```", 1)[0]
-            .strip()
-        )
-
-
-    start = text.find("{")
-    end = text.rfind("}")
-
-
-    if (
-        start != -1
-        and end != -1
-    ):
-
-        text = text[
-            start:end + 1
-        ]
-
-
+        return {'evidence': []}
+    if '```json' in text:
+        text = text.split('```json', 1)[1].split('```', 1)[0].strip()
+    elif '```' in text:
+        text = text.split('```', 1)[1].split('```', 1)[0].strip()
+    start = text.find('{')
+    end = text.rfind('}')
+    if start != -1 and end != -1:
+        text = text[start:end + 1]
     try:
-
-        return json.loads(
-            text
-        )
-
-
+        return json.loads(text)
     except json.JSONDecodeError:
-
-        print(
-            "\n[JSON PARSE FAILED]"
-        )
-
-        print(
-            text
-        )
-
+        print('\n[JSON PARSE FAILED]')
+        print(text)
         raise
 
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
+def run_planner(question: str, memory_context: str = '', runner=None) -> ResearchPlan:
+    """Run the Planner chain; runner optionally injects a LangChain Runnable."""
+    chain = create_planner_chain() if runner is None else runner
+    result = chain.invoke({'question': question, 'memory_context': memory_context})
+    return ResearchPlan.model_validate(result)
 
-def utc_now():
-    return datetime.now(
-        timezone.utc
-    )
+def run_writer(prompt: str, runner=None) -> str:
+    """Run the Writer chain; runner optionally injects a LangChain Runnable."""
+    chain = create_writer_chain() if runner is None else runner
+    return chain.invoke({'prompt': prompt})
 
-
-
-def run_planner(
-    question: str,
-    memory_context: str = "",
-    runner=Runner,
-) -> ResearchPlan:
-
-    planner_prompt = f"""
-    用户研究问题：
-
-    {question}
-
-
-    历史研究记忆：
-
-    {memory_context}
-
-
-    请基于用户问题和已有研究记忆，
-    生成新的 Research Plan。
-
-    如果历史记忆为空，
-    不要假设已有知识。
-    """
-
-
-
-    result = runner.run_sync(
-        planner_agent,
-        planner_prompt,
-        max_turns=3,
-    )
-
-
-    raw_plan = result.final_output
-
-
-    plan_dict = safe_json_loads(
-        raw_plan
-    )
-
-
-    return ResearchPlan.model_validate(
-        plan_dict
-    )
-
-
-
-def run_writer(
-    prompt: str,
-    runner=Runner,
-) -> str:
-
-    result = runner.run_sync(
-        writer_agent,
-        prompt,
-        max_turns=3,
-    )
-
-
-    return result.final_output
-
-
-
-def run_critic(
-    prompt: str,
-    runner=Runner,
-) -> CriticReview:
-
-    result = runner.run_sync(
-        critic_agent,
-        prompt,
-        max_turns=3,
-    )
-
-
-    raw_review = result.final_output
-
-
-    review_dict = safe_json_loads(
-        raw_review
-    )
-
-
-    return CriticReview.model_validate(
-        review_dict
-    )
-
-
+def run_critic(prompt: str, runner=None) -> CriticReview:
+    """Run the Critic chain; runner optionally injects a LangChain Runnable."""
+    chain = create_critic_chain() if runner is None else runner
+    result = chain.invoke({'prompt': prompt})
+    return CriticReview.model_validate(result)
 
 def run_research_query(
     query: str,
     search_type=None,
-    runner=Runner,
+    runner=None,
     clock=utc_now,
 ) -> list[Evidence]:
-
-
-    # ===============================
-    # Step 7C:
-    # Planner search_type
-    #        ↓
-    # ToolRouter
-    #        ↓
-    # allowed tools
-    # ===============================
-
-    router = ToolRouter()
-
-
-    # 保持旧代码兼容
-    # 如果没有传 search_type，
-    # 默认按照旧逻辑走论文搜索
-
+    """Execute permitted tools and attach locally generated evidence metadata."""
     if search_type is None:
-
-        search_type = (
-            SearchType.PAPER_SEARCH
-        )
-
-
-    routed_tools = router.route(
-        search_type
-    )
-
-
-    # ===============================
-    # Step 7D:
-    #
-    # SearchType
-    #       ↓
-    # ToolRouter
-    #       ↓
-    # Dynamic Researcher Agent
-    # ===============================
-
-    researcher_agent = (
-        create_researcher_agent(
-            search_type
-        )
-    )
-
-
-    result = runner.run_sync(
-        researcher_agent,
-        query,
-        max_turns=8,
-    )
-
-
-    raw_output = result.final_output
-
-
+        search_type = SearchType.PAPER_SEARCH
+    agent = create_researcher_agent(search_type)
+    executor = agent if runner is None else runner
+    raw_output = executor.invoke(query, max_turns=8)
     try:
-
-        data = safe_json_loads(
-            raw_output
-        )
-
-
+        data = safe_json_loads(raw_output)
     except json.JSONDecodeError:
-
-        data = {
-            "evidence": []
-        }
-
+        data = {'evidence': []}
     evidence_list = []
-
-
-    for item in data.get(
-        "evidence",
-        []
-    ):
-
-
-        item.setdefault(
-            "evidence_type",
-            "paper",
-        )
-
-
-        item.setdefault(
-            "source",
-            "OpenAlex",
-        )
-
-
-        item.setdefault(
-            "summary",
-            item.get(
-                "abstract",
-                "",
-            ),
-        )
-
-
-        evidence_list.append(
-            Evidence.model_validate(
-                item
-            )
-        )
-
-
-
-    retrieved_at = (
-
-        clock()
-
-        .isoformat(
-            timespec="seconds"
-        )
-
-    )
-
-
-
+    for item in data.get('evidence', []):
+        item.setdefault('evidence_type', 'paper')
+        item.setdefault('source', 'OpenAlex')
+        item.setdefault('summary', item.get('abstract', ''))
+        evidence_list.append(Evidence.model_validate(item))
+    retrieved_at = clock().isoformat(timespec='seconds')
     for evidence in evidence_list:
-
         evidence.query = query
-
-        evidence.retrieved_at = (
-            retrieved_at
-        )
-
-
-
+        evidence.retrieved_at = retrieved_at
     return evidence_list
 
-
-
-
-def run_research_stage(
-    plan: ResearchPlan,
-    runner=Runner,
-) -> list[Evidence]:
+def run_research_stage(plan: ResearchPlan, runner=None) -> list[Evidence]:
     """
     执行 ResearchPlan 中的全部子问题，
     汇总所有 Evidence。
     """
-
     all_evidence: list[Evidence] = []
-
-    for sub_question in (
-        plan.sub_questions
-    ):
-
-        evidence_list = (
-            run_research_query(
-                query=(
-                    sub_question.question
-                ),
-                search_type=(
-                    sub_question.search_type
-                ),
-                runner=runner,
-            )
+    for sub_question in plan.sub_questions:
+        evidence_list = run_research_query(
+            query=sub_question.question,
+            search_type=sub_question.search_type,
+            runner=runner,
         )
-
-        all_evidence.extend(
-            evidence_list
-        )
-
+        all_evidence.extend(evidence_list)
     return all_evidence

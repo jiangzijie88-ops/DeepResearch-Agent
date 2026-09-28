@@ -1,4 +1,6 @@
 from fastapi.testclient import TestClient
+import httpx
+from openai import APIStatusError
 
 from api.server import app
 
@@ -125,3 +127,20 @@ def test_research_endpoint(
         ==
         "fake report"
     )
+
+
+def test_research_endpoint_reports_model_balance_error(monkeypatch):
+    response = httpx.Response(
+        402,
+        request=httpx.Request("POST", "https://api.deepseek.com/chat/completions"),
+    )
+
+    def insufficient_balance(question):
+        raise APIStatusError("Insufficient Balance", response=response, body=None)
+
+    monkeypatch.setattr("api.server.run_research_pipeline", insufficient_balance)
+
+    result = client.post("/research", json={"question": "test question"})
+
+    assert result.status_code == 402
+    assert result.json()["detail"] == "模型账户余额不足，请充值或更换 API 密钥。"

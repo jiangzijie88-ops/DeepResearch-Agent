@@ -1,12 +1,14 @@
-from agents import Agent
+from langchain_core.messages import SystemMessage
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.exceptions import OutputParserException
+from langchain_core.runnables import Runnable, RunnableLambda
+from pydantic import ValidationError
 
 from llm import get_model
+from models.critic_review import CriticReview
 
 
-critic_agent = Agent(
-    name="Research Critic",
-
-    instructions="""
+CRITIC_INSTRUCTIONS = """
 你是 DeepResearch 系统中的 Critic Agent。
 
 你的职责是审核 Writer 生成的 Research Report，
@@ -30,7 +32,7 @@ critic_agent = Agent(
 
 如果存在证据缺口，需要生成可以直接交给 Researcher 执行的补搜问题。
 
-你必须只返回合法 JSON。
+请通过 CriticReview 结构化输出返回审核结果。
 
 不要返回 Markdown。
 不要使用 ```json。
@@ -78,9 +80,24 @@ critic_agent = Agent(
   "research_queries": [],
   "verdict": "PASS"
 }
-""",
+"""
 
-    model=get_model(),
-)
+
+critic_prompt = ChatPromptTemplate.from_messages([
+    SystemMessage(content=CRITIC_INSTRUCTIONS),
+    ("human", "{prompt}"),
+])
+
+
+def create_critic_chain() -> Runnable[dict[str, str], CriticReview]:
+    """Create Prompt -> Model -> CriticReview lazily, without search tools."""
+    chain = critic_prompt | get_model().with_structured_output(
+        CriticReview, method="function_calling",
+    ) | RunnableLambda(CriticReview.model_validate)
+    return chain.with_retry(
+        retry_if_exception_type=(ValidationError, OutputParserException),
+        stop_after_attempt=2,
+        wait_exponential_jitter=False,
+    )
 
 

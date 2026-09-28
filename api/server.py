@@ -1,6 +1,7 @@
 import json
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from openai import APIStatusError
 from pydantic import BaseModel, Field
 
 from fastapi.responses import StreamingResponse
@@ -54,11 +55,17 @@ def root():
 def research(
     request: ResearchRequest,
 ):
-
-
-    state = run_research_pipeline(
-        request.question
-    )
+    try:
+        state = run_research_pipeline(
+            request.question
+        )
+    except APIStatusError as error:
+        if error.status_code == 402:
+            raise HTTPException(
+                status_code=402,
+                detail="模型账户余额不足，请充值或更换 API 密钥。",
+            ) from error
+        raise
 
 
     return ResearchResponse(

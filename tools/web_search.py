@@ -1,7 +1,7 @@
 import threading
 
 from ddgs import DDGS
-from agents import function_tool
+from langchain_core.tools import tool
 
 
 MAX_SEARCHES = 3
@@ -27,7 +27,7 @@ def reset_search_count():
         _search_count = 0
 
 
-@function_tool
+@tool
 def web_search(query: str) -> str:
     """
     Search the web for up-to-date information.

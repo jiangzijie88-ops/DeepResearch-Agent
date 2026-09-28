@@ -2,7 +2,7 @@ import time
 import threading
 
 from dotenv import load_dotenv
-from agents import function_tool
+from langchain_core.tools import tool
 
 from tools.academic.aggregator import (
     search_academic_papers,
@@ -167,7 +167,7 @@ def _search_academic_sources(
         limit_per_source=10,
     )
 
-@function_tool
+@tool
 def paper_search(
     query: str,
     start_year: int,

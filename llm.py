@@ -1,75 +1,40 @@
+"""Environment-configured LangChain chat model factory."""
+
 import os
 
 from dotenv import load_dotenv
-from openai import AsyncOpenAI
-from agents import OpenAIChatCompletionsModel, set_tracing_disabled
+from langchain_openai import ChatOpenAI
 
 
-# 读取 .env 文件,
 load_dotenv()
 
 
-# 暂时关闭 OpenAI Agents SDK 的 tracing
-set_tracing_disabled(True)
+def get_model() -> ChatOpenAI:
+    """Build the shared LangChain chat model (DeepSeek by default).
 
+    Read LLM_PROVIDER and the selected provider's API_KEY, MODEL and BASE_URL
+    environment variables, e.g. DEEPSEEK_BASE_URL. All three are required.
+    Supports bind_tools() and Pydantic with_structured_output(); for DeepSeek,
+    use method="function_calling" rather than OpenAI-native JSON Schema output.
+    """
+    provider = os.getenv("LLM_PROVIDER", "deepseek").strip().lower()
+    if provider not in {"deepseek", "openai"}:
+        raise ValueError(f"Unsupported LLM_PROVIDER: {provider}")
 
-def get_model():
+    prefix = provider.upper()
+    names = [f"{prefix}_{suffix}" for suffix in ("API_KEY", "MODEL", "BASE_URL")]
+    values = [os.getenv(name, "").strip() for name in names]
+    missing = [name for name, value in zip(names, values) if not value]
+    if missing:
+        raise ValueError(f"Missing environment variables: {', '.join(missing)}")
 
-    provider = os.getenv("LLM_PROVIDER", "openai").lower()
-
-    # =========================
-    # OpenAI
-    # =========================
-    if provider == "openai":
-
-        api_key = os.getenv("OPENAI_API_KEY")
-        model_name = os.getenv("OPENAI_MODEL")
-
-        if not api_key:
-            raise ValueError(
-                "没有找到 OPENAI_API_KEY，请检查 .env 文件。"
-            )
-
-        client = AsyncOpenAI(
-            api_key=api_key
-        )
-
-        model = OpenAIChatCompletionsModel(
-            model=model_name,
-            openai_client=client
-        )
-
-        return model
-
-    # =========================
-    # DeepSeek
-    # =========================
-    elif provider == "deepseek":
-
-        api_key = os.getenv("DEEPSEEK_API_KEY")
-        model_name = os.getenv("DEEPSEEK_MODEL")
-
-        if not api_key:
-            raise ValueError(
-                "没有找到 DEEPSEEK_API_KEY，请检查 .env 文件。"
-            )
-
-        client = AsyncOpenAI(
-            api_key=api_key,
-            base_url="https://api.deepseek.com"
-        )
-
-        model = OpenAIChatCompletionsModel(
-            model=model_name,
-            openai_client=client
-        )
-
-        return model
-
-    # =========================
-    # 不支持的供应商
-    # =========================
-    else:
-        raise ValueError(
-            f"暂不支持模型供应商：{provider}"
-        )
+    api_key, model_name, base_url = values
+    return ChatOpenAI(
+        api_key=api_key,
+        model=model_name,
+        base_url=base_url,
+        temperature=0,
+        use_responses_api=False,
+        # Structured schemas and the first search turn require forced tools.
+        extra_body={"thinking": {"type": "disabled"}} if provider == "deepseek" else None,
+    )

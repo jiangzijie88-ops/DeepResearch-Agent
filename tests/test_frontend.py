@@ -42,6 +42,7 @@ def test_frontend_displays_report_and_evidence(monkeypatch):
     app = submit(monkeypatch, response=response)
     assert not app.exception
     assert any(item.value == "# 研究报告" for item in app.markdown)
+    assert not any("正在生成报告，请稍等" in item.value for item in app.info)
     assert len(app.dataframe) == 1
     row = app.dataframe[0].value.iloc[0]
     assert row["Title"] == "示例论文"
@@ -72,6 +73,9 @@ def test_frontend_handles_transport_errors(monkeypatch, error, message):
     assert not app.exception
     assert message in app.error[0].value
     assert "private details" not in app.error[0].value
+    assert not any("正在生成报告" in item.value for item in app.info)
+    if isinstance(error, requests.ConnectionError):
+        assert any("python -m uvicorn api.server:app" in item.value for item in app.code)
 
 
 def test_frontend_reports_http_status_without_leaking_body(monkeypatch):
@@ -79,6 +83,12 @@ def test_frontend_reports_http_status_without_leaking_body(monkeypatch):
     assert not app.exception
     assert "500" in app.error[0].value
     assert "secret-token" not in app.error[0].value
+
+
+def test_frontend_explains_model_balance_error(monkeypatch):
+    app = submit(monkeypatch, response=response_for({}, 402))
+    assert not app.exception
+    assert "余额不足" in app.error[0].value
 
 
 def test_frontend_handles_invalid_json(monkeypatch):

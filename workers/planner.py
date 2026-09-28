@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
-from agents import Agent
+from langchain_core.messages import SystemMessage
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import Runnable
 
 from llm import get_model
 from models.search_type import SearchType
@@ -9,7 +11,7 @@ class ResearchSubQuestion(BaseModel):
     id: int = Field(description="子问题编号")
     question: str = Field(description="需要调查的具体研究子问题")
     search_type: SearchType = Field(
-        description="建议的检索类型，只能是 paper_search、web_search 或 both"
+        description="建议的检索类型，只能是 paper_search、web_search 或 hybrid"
     )
 
 
@@ -20,10 +22,7 @@ class ResearchPlan(BaseModel):
     )
 
 
-planner_agent = Agent(
-    name="Research Planner",
-
-    instructions="""
+PLANNER_INSTRUCTIONS = """
 你是 DeepResearch 系统中的 Planner Agent。
 
 你的任务不是直接回答用户的问题，也不要自己搜索资料。
@@ -36,14 +35,13 @@ planner_agent = Agent(
 4. 判断每个子问题适合使用：
    - paper_search：学术论文、作者、年份、引用量、DOI 等
    - web_search：网页资料、新闻、机构信息、行业资料等
-   - both：同时需要论文和网页信息
+   - hybrid：同时需要论文和网页信息
 5. 子问题之间尽量减少重复。
 6. 通常生成 3 到 6 个子问题。
 7. 不要执行搜索。
 8. 不要编造研究结果。
 
-你必须只返回合法 JSON，不要输出 Markdown，不要输出 ```json，
-不要添加解释文字。
+请使用 ResearchPlan 结构化输出返回研究目标和子问题，不要添加额外解释。
 
 JSON 格式必须严格为：
 
@@ -75,7 +73,7 @@ OUTPUT FORMAT
 search_type 只能是：
 paper_search
 web_search
-both
+hybrid
 
 
 SEARCH TYPE RULES
@@ -111,7 +109,24 @@ SEARCH TYPE RULES
   才使用 "hybrid"
 
 不要为了保险而默认使用 "hybrid"。
-""",
+"""
 
-    model=get_model(),
-)
+
+planner_prompt = ChatPromptTemplate.from_messages([
+    SystemMessage(content=PLANNER_INSTRUCTIONS),
+    ("human", """用户研究问题：
+{question}
+
+历史研究记忆：
+{memory_context}
+
+请基于用户问题和已有研究记忆生成新的 Research Plan。
+如果历史记忆为空，不要假设已有知识。"""),
+])
+
+
+def create_planner_chain() -> Runnable[dict[str, str], ResearchPlan]:
+    """Create Prompt -> Model -> Pydantic output lazily for each planning run."""
+    return planner_prompt | get_model().with_structured_output(
+        ResearchPlan, method="function_calling",
+    )

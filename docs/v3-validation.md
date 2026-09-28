@@ -53,4 +53,3 @@ python -m pytest tests -q -p no:cacheprovider --tb=short
 - 暂存区为空；保留此前尚未提交的 v3 工作。
 - Git whitespace 检查按 Windows CRLF 规则运行，通过；默认检查会将已有 CRLF 视作行尾空白。
 - 独立只读代码复核未发现本轮 B–D 的阻塞问题。
-- 遗留工厂、实验 research stage 和 Planner 提示中的历史命名问题未在本轮扩大修改，README 已注明。

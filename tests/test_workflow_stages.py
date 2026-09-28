@@ -1,4 +1,5 @@
 from workers.planner import ResearchPlan
+from langchain_core.runnables import RunnableLambda
 from datetime import datetime, timezone
 
 from models.critic_review import CriticReview
@@ -12,34 +13,19 @@ from workflow.stages import (
 )
 
 
-class FakePlannerRunner:
-    @staticmethod
-    def run_sync(
-        agent,
-        question,
-        max_turns,
-    ):
-        class Result:
-            final_output = """
-            {
-                "research_goal": "测试研究目标",
-                "sub_questions": [
-                    {
-                        "id": 1,
-                        "question": "测试子问题",
-                        "search_type": "paper_search"
-                    }
-                ]
-            }
-            """
-
-        return Result()
-
-
 def test_run_planner_returns_research_plan():
+    def fake_planner(inputs):
+        assert inputs == {"question": "测试问题", "memory_context": ""}
+        return ResearchPlan.model_validate({
+            "research_goal": "测试研究目标",
+            "sub_questions": [{
+                "id": 1, "question": "测试子问题", "search_type": "paper_search",
+            }],
+        })
+
     plan = run_planner(
         question="测试问题",
-        runner=FakePlannerRunner,
+        runner=RunnableLambda(fake_planner),
     )
 
     assert isinstance(
@@ -67,23 +53,14 @@ def test_run_planner_returns_research_plan():
     )
 
 
-class FakeWriterRunner:
-    @staticmethod
-    def run_sync(
-        agent,
-        prompt,
-        max_turns,
-    ):
-        class Result:
-            final_output = "这是测试 Writer 生成的报告。"
-
-        return Result()
-
-
 def test_run_writer_returns_report_text():
+    def fake_writer(inputs):
+        assert inputs == {"prompt": "测试 Writer 输入"}
+        return "这是测试 Writer 生成的报告。"
+
     report = run_writer(
         prompt="测试 Writer 输入",
-        runner=FakeWriterRunner,
+        runner=RunnableLambda(fake_writer),
     )
 
     assert (
@@ -92,32 +69,18 @@ def test_run_writer_returns_report_text():
     )
 
 
-class FakeCriticRunner:
-    @staticmethod
-    def run_sync(
-        agent,
-        prompt,
-        max_turns,
-    ):
-        class Result:
-            final_output = """
-            {
-                "overall_assessment": "报告整体可用。",
-                "issues": [],
-                "evidence_gaps": [],
-                "needs_research": false,
-                "research_queries": [],
-                "verdict": "PASS"
-            }
-            """
-
-        return Result()
-
-
 def test_run_critic_returns_critic_review():
+    def fake_critic(inputs):
+        assert inputs == {"prompt": "测试 Critic 输入"}
+        return CriticReview(
+            overall_assessment="报告整体可用。",
+            issues=[], evidence_gaps=[], needs_research=False,
+            research_queries=[], verdict="PASS",
+        )
+
     review = run_critic(
         prompt="测试 Critic 输入",
-        runner=FakeCriticRunner,
+        runner=RunnableLambda(fake_critic),
     )
 
     assert isinstance(
@@ -145,13 +108,9 @@ def test_run_critic_returns_critic_review():
         == []
     )
 
-class FakeResearcherRunner:
+class FakeResearcherExecutor:
     @staticmethod
-    def run_sync(
-        agent,
-        query,
-        max_turns,
-    ):
+    def invoke(query, max_turns=8):
         class Result:
             final_output = """
             {
@@ -177,7 +136,7 @@ class FakeResearcherRunner:
             }
             """
 
-        return Result()
+        return Result.final_output
 
 
 def fake_clock():
@@ -194,7 +153,7 @@ def fake_clock():
 def test_run_research_query_returns_evidence_list():
     evidence_list = run_research_query(
         query="测试论文检索",
-        runner=FakeResearcherRunner,
+        runner=FakeResearcherExecutor,
         clock=fake_clock,
     )
 
@@ -255,13 +214,9 @@ def test_run_research_query_returns_evidence_list():
     )
 
 
-class FakeEmptyResearcherRunner:
+class FakeEmptyResearcherExecutor:
     @staticmethod
-    def run_sync(
-        agent,
-        query,
-        max_turns,
-    ):
+    def invoke(query, max_turns=8):
         class Result:
             final_output = """
             {
@@ -269,29 +224,25 @@ class FakeEmptyResearcherRunner:
             }
             """
 
-        return Result()
+        return Result.final_output
 
 
 def test_run_research_query_accepts_empty_evidence():
     evidence_list = run_research_query(
         query="没有结果的测试",
-        runner=FakeEmptyResearcherRunner,
+        runner=FakeEmptyResearcherExecutor,
     )
 
     assert evidence_list == []
 
 
-class FakeInvalidResearcherRunner:
+class FakeInvalidResearcherExecutor:
     @staticmethod
-    def run_sync(
-        agent,
-        query,
-        max_turns,
-    ):
+    def invoke(query, max_turns=8):
         class Result:
             final_output = "not valid json"
 
-        return Result()
+        return Result.final_output
 
 
 def test_run_research_query_returns_empty_evidence_on_invalid_json():
@@ -303,33 +254,25 @@ def test_run_research_query_returns_empty_evidence_on_invalid_json():
         )
 
 
-    class FakeRunner:
+    class FakeExecutor:
 
         @staticmethod
-        def run_sync(
-            agent,
-            query,
-            max_turns,
-        ):
+        def invoke(query, max_turns=8):
 
-            return FakeResult()
+            return FakeResult.final_output
 
 
     evidence = run_research_query(
         query="test query",
-        runner=FakeRunner,
+        runner=FakeExecutor,
     )
 
 
     assert evidence == []
 
-class FakeInvalidEvidenceRunner:
+class FakeInvalidEvidenceExecutor:
     @staticmethod
-    def run_sync(
-        agent,
-        query,
-        max_turns,
-    ):
+    def invoke(query, max_turns=8):
         class Result:
             final_output = """
             {
@@ -341,16 +284,12 @@ class FakeInvalidEvidenceRunner:
             }
             """
 
-        return Result()
+        return Result.final_output
 
 
-class FakeInvalidEvidenceRunner:
+class FakeInvalidEvidenceExecutor:
     @staticmethod
-    def run_sync(
-        agent,
-        query,
-        max_turns,
-    ):
+    def invoke(query, max_turns=8):
         class Result:
             final_output = """
             {
@@ -362,16 +301,12 @@ class FakeInvalidEvidenceRunner:
             }
             """
 
-        return Result()
+        return Result.final_output
 
 
-class FakeResearcherWithWrongMetadataRunner:
+class FakeResearcherWithWrongMetadataExecutor:
     @staticmethod
-    def run_sync(
-        agent,
-        query,
-        max_turns,
-    ):
+    def invoke(query, max_turns=8):
         class Result:
             final_output = """
             {
@@ -393,13 +328,13 @@ class FakeResearcherWithWrongMetadataRunner:
             }
             """
 
-        return Result()
+        return Result.final_output
 
 
 def test_run_research_query_overrides_system_metadata():
     evidence_list = run_research_query(
         query="真实查询词",
-        runner=FakeResearcherWithWrongMetadataRunner,
+        runner=FakeResearcherWithWrongMetadataExecutor,
         clock=fake_clock,
     )
 
@@ -415,11 +350,7 @@ def test_run_research_query_overrides_system_metadata():
 
 class FakeResearcherWithoutAcademicMetadata:
     @staticmethod
-    def run_sync(
-        agent,
-        query,
-        max_turns,
-    ):
+    def invoke(query, max_turns=8):
         class Result:
             final_output = """
             {
@@ -439,7 +370,7 @@ class FakeResearcherWithoutAcademicMetadata:
             }
             """
 
-        return Result()
+        return Result.final_output
 
 
 

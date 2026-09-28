@@ -1,10 +1,15 @@
-from agents import Agent
+from dataclasses import dataclass
+
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.tools import BaseTool
 
 from llm import get_model
 from models.search_type import SearchType
 
 from tools.web_search import web_search
 from tools.paper_search import paper_search
+from workflow.tool_router import ToolRouter
 
 
 
@@ -211,58 +216,58 @@ ACADEMIC SEARCH RULES
 """
 
 
-def create_researcher_agent(
-    search_type: SearchType,
-) -> Agent:
-    """
-    根据 Planner 指定的搜索类型，
-    创建只拥有对应工具权限的 Researcher Agent。
-    """
+@dataclass
+class ResearcherToolLoop:
+    """A bounded LangChain tool-calling loop within the custom pipeline."""
 
-    if isinstance(
-        search_type,
-        str,
-    ):
-        search_type = SearchType(
-            search_type
-        )
+    tools: list[BaseTool]
 
-    if (
-        search_type
-        == SearchType.PAPER_SEARCH
-    ):
-        tools = [
-            paper_search,
+    def invoke(self, query: str, max_turns: int = 8) -> str:
+        if max_turns < 1:
+            raise ValueError("max_turns must be positive")
+
+        model = get_model()
+        required_model = model.bind_tools(self.tools, tool_choice="required")
+        automatic_model = model.bind_tools(self.tools)
+        allowed = {tool.name: tool for tool in self.tools}
+        messages = [
+            SystemMessage(content=RESEARCHER_INSTRUCTIONS),
+            HumanMessage(content=query),
         ]
+        executed_tool = False
 
-    elif (
-        search_type
-        == SearchType.WEB_SEARCH
-    ):
-        tools = [
-            web_search,
-        ]
+        for turn in range(max_turns):
+            response = (required_model if turn == 0 else automatic_model).invoke(messages)
+            messages.append(response)
+            if not response.tool_calls:
+                if not executed_tool:
+                    return '{"evidence": []}'
+                return StrOutputParser().invoke(response)
 
-    elif (
-        search_type
-        == SearchType.HYBRID
-    ):
-        tools = [
-            paper_search,
-            web_search,
-        ]
+            for call in response.tool_calls:
+                selected = allowed.get(call["name"])
+                status = "success"
+                if selected is None:
+                    content = f"Error: tool {call['name']} is not allowed for this query."
+                    status = "error"
+                else:
+                    try:
+                        content = selected.invoke(call["args"])
+                        executed_tool = True
+                    except Exception as exc:
+                        content = f"Error: {call['name']} failed ({type(exc).__name__}). Do not invent evidence."
+                        status = "error"
+                messages.append(ToolMessage(
+                    content=str(content), tool_call_id=call["id"],
+                    name=call["name"], status=status,
+                ))
 
-    else:
-        raise ValueError(
-            "Unsupported search type: "
-            f"{search_type}"
-        )
+        # Preserve the empty-evidence fallback when the turn budget is exhausted.
+        return '{"evidence": []}'
 
-    return Agent(
-        name="Researcher",
-        instructions=(
-            RESEARCHER_INSTRUCTIONS
-        ),
-        model=get_model(),
-        tools=tools,
-    )
+
+def create_researcher_agent(search_type: SearchType) -> ResearcherToolLoop:
+    """Expose only the tools permitted by the existing SearchType router."""
+    routed = ToolRouter().route(search_type)
+    available = {"paper_search": paper_search, "web_search": web_search}
+    return ResearcherToolLoop(tools=[available[name] for name in routed.tools])
