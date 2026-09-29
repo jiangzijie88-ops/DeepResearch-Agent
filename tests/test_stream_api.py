@@ -15,6 +15,7 @@ def test_stream_endpoint_exists(
     def fake_pipeline(
         question,
         callback=None,
+        *, memory_path,
     ):
 
         if callback:

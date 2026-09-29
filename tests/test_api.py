@@ -78,6 +78,7 @@ def test_research_endpoint(
 
     def fake_pipeline(
         question,
+        *, memory_path,
     ):
 
 
@@ -135,7 +136,7 @@ def test_research_endpoint_reports_model_balance_error(monkeypatch):
         request=httpx.Request("POST", "https://api.deepseek.com/chat/completions"),
     )
 
-    def insufficient_balance(question):
+    def insufficient_balance(question, *, memory_path):
         raise APIStatusError("Insufficient Balance", response=response, body=None)
 
     monkeypatch.setattr("api.server.run_research_pipeline", insufficient_balance)

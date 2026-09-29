@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from openai import APIStatusError
@@ -9,6 +10,9 @@ from fastapi.responses import StreamingResponse
 from workflow.pipeline import (
     run_research_pipeline,
 )
+
+
+MEMORY_PATH = Path(__file__).resolve().parents[1] / "outputs" / "memory.json"
 
 
 app = FastAPI(
@@ -57,7 +61,8 @@ def research(
 ):
     try:
         state = run_research_pipeline(
-            request.question
+            request.question,
+            memory_path=MEMORY_PATH,
         )
     except APIStatusError as error:
         if error.status_code == 402:
@@ -123,6 +128,7 @@ def research_stream(
         state = run_research_pipeline(
             request.question,
             callback=callback,
+            memory_path=MEMORY_PATH,
         )
 
 

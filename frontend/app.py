@@ -573,7 +573,7 @@ unsafe_allow_html=True
 if run:
     question = question.strip()
     if not question:
-        st.warning("请输入研究问题")
+        st.warning("请输入研究问题：")
     else:
         st.session_state.pop("research_result", None)
         status_placeholder = st.empty()
