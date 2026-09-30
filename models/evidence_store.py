@@ -7,6 +7,7 @@ class EvidenceStore:
 
     def __init__(self):
         self._items: list[Evidence] = []
+        self._next_id = 1
 
 
     # ========================================================
@@ -18,6 +19,9 @@ class EvidenceStore:
         evidence_list: list[Evidence],
     ) -> int:
         added_count = 0
+        # Reserve checkpoint IDs before assigning IDs to legacy entries.
+        reserved = {e.evidence_id for e in evidence_list if e.evidence_id}
+        used = {e.evidence_id for e in self._items}
 
         for evidence in evidence_list:
 
@@ -26,6 +30,14 @@ class EvidenceStore:
             )
 
             if existing is None:
+                if evidence.evidence_id is None:
+                    while f"E{self._next_id}" in reserved | used:
+                        self._next_id += 1
+                    evidence.evidence_id = f"E{self._next_id}"
+                elif evidence.evidence_id in used:
+                    raise ValueError(f"Conflicting Evidence ID: {evidence.evidence_id}")
+                used.add(evidence.evidence_id)
+                self._next_id = max(self._next_id, int(evidence.evidence_id[1:]) + 1)
 
                 self._items.append(
                     evidence

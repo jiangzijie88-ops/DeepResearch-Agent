@@ -1,5 +1,7 @@
 from fastapi.testclient import TestClient
 import httpx
+import pytest
+from langchain_openai.chat_models.base import OpenAIConnectionError, OpenAITimeoutError
 from openai import APIStatusError
 
 from api.server import app
@@ -145,3 +147,19 @@ def test_research_endpoint_reports_model_balance_error(monkeypatch):
 
     assert result.status_code == 402
     assert result.json()["detail"] == "模型账户余额不足，请充值或更换 API 密钥。"
+
+
+@pytest.mark.parametrize("error_type,status", [
+    (OpenAIConnectionError, 502), (OpenAITimeoutError, 504),
+])
+def test_model_network_failure_returns_upstream_status(monkeypatch, error_type, status):
+    def failed_pipeline(question, *, memory_path):
+        raise error_type(request=httpx.Request("POST", "https://example.invalid/private"))
+
+    monkeypatch.setattr("api.server.run_research_pipeline", failed_pipeline)
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/research", json={"question": "test"},
+    )
+    assert response.status_code == status
+    assert "模型" in response.json()["detail"]
+    assert "private" not in response.text

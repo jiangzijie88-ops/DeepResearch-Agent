@@ -1,6 +1,8 @@
 import json
 
 import pytest
+import httpx
+from langchain_openai.chat_models.base import OpenAIConnectionError
 
 from models.critic_review import CriticReview
 from models.evidence import Evidence
@@ -118,3 +120,31 @@ def test_pipeline_emits_ordered_events(pipeline_case):
         "Researching sub-question 1: 论文", "Researching sub-question 2: 网页",
         "Writer started", "Critic started", "Research completed",
     ]
+
+
+def test_pipeline_continues_after_additional_research_disconnect(pipeline_case, monkeypatch, caplog):
+    review = CriticReview(overall_assessment="Missing evidence", issues=[],
+                         evidence_gaps=["Unverified detail"], needs_research=True,
+                         research_queries=["failed followup", "successful followup"],
+                         verdict="PASS_WITH_REVISIONS")
+    monkeypatch.setattr(pipeline, "run_critic", lambda report: review)
+    initial_research = pipeline.run_research_query
+    followups = []
+
+    def research(query, search_type=None):
+        if search_type is not None:
+            return initial_research(query, search_type)
+        followups.append(query)
+        if query == "failed followup":
+            raise OpenAIConnectionError(request=httpx.Request("POST", "https://example.invalid"))
+        return [Evidence(title="Additional evidence", evidence_type="paper",
+                         source="OpenAlex", summary="Verified extra evidence")]
+
+    monkeypatch.setattr(pipeline, "run_research_query", research)
+    state = pipeline.run_research_pipeline("test question")
+    assert state.status == ResearchStatus.COMPLETED
+    assert state.draft_report and state.final_report
+    assert len(state.evidence) == 2
+    assert followups == ["failed followup", "successful followup"]
+    assert "Unverified detail" in pipeline_case[1][-1]
+    assert "OpenAIConnectionError" in caplog.text

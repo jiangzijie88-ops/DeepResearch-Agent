@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field
 
 
 class Evidence(BaseModel):
+    evidence_id: str | None = Field(default=None, pattern=r"^E[1-9][0-9]*$")
     title: str
     evidence_type: str
 

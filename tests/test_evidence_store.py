@@ -1,5 +1,6 @@
 from models.evidence import Evidence
 from models.evidence_store import EvidenceStore
+import pytest
 
 def make_evidence(
     *,
@@ -341,3 +342,46 @@ def test_evidence_store_normalizes_doi_prefixes():
     )
 
     assert store.count() == 1
+
+
+def test_ids_survive_duplicates_and_append():
+    store = EvidenceStore()
+    store.add_many([make_evidence(title="A", doi="10.1/a"), make_evidence(title="B")])
+    store.add_many([make_evidence(title="A", doi="10.1/a", source="Semantic Scholar", venue="Venue")])
+    store.add_many([make_evidence(title="C")])
+    assert [e.evidence_id for e in store.get_all()] == ["E1", "E2", "E3"]
+    assert store.get_all()[0].source == "OpenAlex | Semantic Scholar"
+    assert store.get_all()[0].venue == "Venue"
+
+
+def test_checkpoint_ids_restore_and_continue(tmp_path):
+    from models.research_state import ResearchState
+    from models.state_store import save_state, load_state
+    store = EvidenceStore()
+    store.add_many([make_evidence(title=str(i)) for i in range(10)])
+    path = tmp_path / "state.json"
+    save_state(ResearchState(question="test", evidence=store.get_all()), path)
+    restored = EvidenceStore()
+    restored.add_many(load_state(path).evidence)
+    restored.add_many([make_evidence(title="new A"), make_evidence(title="new B")])
+    assert [e.evidence_id for e in restored.get_all()] == [f"E{i}" for i in range(1, 13)]
+
+
+def test_legacy_and_out_of_order_ids_do_not_collide():
+    legacy = make_evidence(title="legacy")
+    assigned = make_evidence(title="assigned")
+    assigned = Evidence.model_validate(dict(assigned.model_dump(), evidence_id="E1"))
+    store = EvidenceStore()
+    store.add_many([legacy, assigned])
+    assert [e.evidence_id for e in store.get_all()] == ["E2", "E1"]
+    store.add_many([make_evidence(title="new")])
+    assert store.get_all()[-1].evidence_id == "E3"
+
+
+def test_conflicting_restored_ids_are_rejected():
+    store = EvidenceStore()
+    first = Evidence.model_validate(dict(make_evidence(title="A").model_dump(), evidence_id="E7"))
+    second = Evidence.model_validate(dict(make_evidence(title="B").model_dump(), evidence_id="E7"))
+    store.add_many([first])
+    with pytest.raises(ValueError, match="E7"):
+        store.add_many([second])

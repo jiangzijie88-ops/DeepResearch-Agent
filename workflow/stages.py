@@ -68,6 +68,8 @@ def run_research_query(
         data = {'evidence': []}
     evidence_list = []
     for item in data.get('evidence', []):
+        # IDs belong to the task's EvidenceStore, never to model output.
+        item.pop('evidence_id', None)
         item.setdefault('evidence_type', 'paper')
         item.setdefault('source', 'OpenAlex')
         item.setdefault('summary', item.get('abstract', ''))

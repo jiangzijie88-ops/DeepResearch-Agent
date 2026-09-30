@@ -10,8 +10,9 @@ APP = str(Path(__file__).resolve().parents[1] / "frontend" / "app.py")
 
 
 def submit(monkeypatch, response=None, error=None, question="测试问题"):
-    def post(url, *, json, timeout):
-        assert url == "http://127.0.0.1:8000/research"
+    def post(url, *, json, timeout, stream):
+        assert url == "http://127.0.0.1:8000/research/stream"
+        assert stream is True
         assert json == {"question": question.strip()}
         assert timeout == 600
         if error:
@@ -27,7 +28,13 @@ def submit(monkeypatch, response=None, error=None, question="测试问题"):
 def response_for(payload, status=200):
     response = requests.Response()
     response.status_code = status
-    response._content = json.dumps(payload).encode("utf-8")
+    if status == 200:
+        response._content = ("event: workflow_completed\ndata: " + json.dumps({
+            "type": "workflow_completed", "stage": "final", "message": "研究完成", "data": payload,
+        }, ensure_ascii=False) + "\n\n").encode("utf-8")
+    else:
+        response._content = json.dumps(payload).encode("utf-8")
+    response._content_consumed = True
     return response
 
 
@@ -106,3 +113,35 @@ def test_frontend_explains_empty_evidence(monkeypatch):
     }))
     assert not app.exception
     assert any("证据" in item.value for item in app.info)
+
+
+def test_frontend_displays_stream_failure_without_final_report(monkeypatch):
+    response = response_for({})
+    response._content = ('event: workflow_failed\ndata: ' + json.dumps({
+        "type": "workflow_failed", "message": "模型服务连接中断，请稍后重试。",
+    }, ensure_ascii=False) + '\n\n').encode('utf-8')
+    app = submit(monkeypatch, response=response)
+    assert not app.exception
+    assert "连接中断" in app.error[0].value
+    assert len(app.dataframe) == 0
+
+
+def test_frontend_updates_progress_before_reading_final_event(monkeypatch):
+    from streamlit.delta_generator import DeltaGenerator
+    seen = []
+    original = DeltaGenerator.markdown
+    def capture(self, body, *args, **kwargs):
+        seen.append(body)
+        return original(self, body, *args, **kwargs)
+    monkeypatch.setattr(DeltaGenerator, "markdown", capture)
+    response = response_for({})
+    def lines(**kwargs):
+        yield 'data: {"type":"stage_started","message":"正在生成研究计划"}'
+        yield ''
+        assert any("正在生成研究计划" in text for text in seen)
+        yield 'data: {"type":"workflow_completed","data":{"report":"done","evidence":[]}}'
+        yield ''
+    response.iter_lines = lines
+    app = submit(monkeypatch, response=response)
+    assert not app.exception
+    assert any(item.value == "done" for item in app.markdown)

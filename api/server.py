@@ -1,11 +1,11 @@
-import json
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from openai import APIStatusError
+from openai import APIConnectionError, APIStatusError, APITimeoutError
 from pydantic import BaseModel, Field
 
 from fastapi.responses import StreamingResponse
+from api.streaming import stream_events
 
 from workflow.pipeline import (
     run_research_pipeline,
@@ -64,6 +64,16 @@ def research(
             request.question,
             memory_path=MEMORY_PATH,
         )
+    except APITimeoutError as error:
+        raise HTTPException(
+            status_code=504,
+            detail="模型服务响应超时，请稍后重试。",
+        ) from error
+    except APIConnectionError as error:
+        raise HTTPException(
+            status_code=502,
+            detail="模型服务连接中断，请检查后端网络或代理后重试。",
+        ) from error
     except APIStatusError as error:
         if error.status_code == 402:
             raise HTTPException(
@@ -106,61 +116,11 @@ def research(
 
 
 @app.post("/research/stream")
-def research_stream(
-    request: ResearchRequest,
-):
-
-
-    def event_generator():
-
-        events = []
-
-
-        def callback(
-            message,
-        ):
-
-            events.append(
-                message
-            )
-
-
-        state = run_research_pipeline(
-            request.question,
-            callback=callback,
-            memory_path=MEMORY_PATH,
-        )
-
-
-        for event in events:
-
-            yield (
-                json.dumps(
-                    {
-                        "event": event
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-
-
-        yield (
-            json.dumps(
-                {
-                    "final_report": (
-                        state.final_report
-                        or state.draft_report
-                        or ""
-                    )
-                },
-                ensure_ascii=False,
-            )
-            + "\n"
-        )
-
-
+def research_stream(request: ResearchRequest):
     return StreamingResponse(
-        event_generator(),
-        media_type="application/json",
+        stream_events(lambda on_event: run_research_pipeline(
+            request.question, memory_path=MEMORY_PATH, on_event=on_event,
+        )),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )

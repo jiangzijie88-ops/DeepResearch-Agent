@@ -27,6 +27,27 @@ WRITER_INSTRUCTIONS = """
 10. 不要提及你是 AI。
 11. 不要执行任何搜索。
 
+引用规则（初稿与修订均适用）：
+- Evidence 的 evidence_id 是稳定标识，citation 给出正文写法，例如 [E1]。
+- 论文信息、方法、实验结果、学术趋势、数量性结论等基于证据的事实陈述，
+  必须在对应陈述旁引用该 Evidence ID。多个证据写成 [E1][E2]，不要合并为 [E1, E2]。
+- Only cite Evidence IDs explicitly provided in the Evidence context. Never invent citation IDs.
+- 没有证据支持的具体事实应删除，或明确标为受限推断，不得伪造引用。
+- 结构说明、用户问题和过渡句不需要机械引用。引用不代表 verified=true。
+- 修订时保留正确的旧引用，并可引用新增证据；不要自行重新编号。
+- 只输出正文，不生成 References、参考证据或参考文献列表；系统会根据正文引用
+  从真实 Evidence metadata 生成 References。
+- Evidence 总数是当前 Store 中的记录数，不等于正文引用数，也不一定都是论文；
+  不要凭估计报告论文数量。
+
+年份范围规则（初稿与修订均适用）：
+- When the user specifies an explicit publication-year range, out-of-range evidence
+  may be used as background evidence when useful, but is not part of the requested paper list.
+  Clearly label such material as background references in a separate section.
+- 用户明确要求年份范围时，“目标时间范围内论文”只列该范围内的论文。
+  例如 2024–2026 年清单不得混入 2023 年论文；有价值的范围外证据单列“背景参考”。
+  年份未知的证据不能当作已确认在范围内的论文，不得修改年份来满足要求。
+
 报告建议结构：
 
 # Research Report

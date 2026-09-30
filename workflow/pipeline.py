@@ -1,5 +1,10 @@
 import json
+import logging
 from pathlib import Path
+from openai import APIConnectionError
+
+
+logger = logging.getLogger(__name__)
 
 from memory import (
     MemoryItem,
@@ -14,6 +19,11 @@ from models.research_state import (
     ResearchStatus,
 )
 from models.state_store import save_state
+from workflow.events import EventSink, emit_event, workflow_lifecycle
+from workflow.citations import append_references, report_body
+from workflow.citation_validation import (
+    validate_citations, build_support_context, merge_citation_review,
+)
 
 from tools.paper_search import (
     reset_paper_search_count,
@@ -74,7 +84,7 @@ def serialize_evidence(
 
     for evidence in evidence_list:
         data.append(
-            evidence.model_dump()
+            dict(evidence.model_dump(), citation=f"[{evidence.evidence_id}]" if evidence.evidence_id else None)
         )
 
     return json.dumps(
@@ -89,6 +99,7 @@ def run_research_tasks(
     plan,
     evidence_store: EvidenceStore,
     state: ResearchState,
+    on_event: EventSink | None = None,
 ) -> None:
     """
     执行 Planner 生成的所有研究子问题。
@@ -101,6 +112,9 @@ def run_research_tasks(
     for sub_question in (
         plan.sub_questions
     ):
+
+        emit_event(on_event, "progress", "researcher", "正在检索子问题",
+                   subquestion_id=sub_question.id, search_type=sub_question.search_type.value)
 
         state.tool_routes[
             str(sub_question.id)
@@ -139,9 +153,11 @@ def run_research_tasks(
 
             evidence_list = []
 
-        evidence_store.add_many(
+        added = evidence_store.add_many(
             evidence_list
         )
+        emit_event(on_event, "progress", "researcher", "已收集研究证据",
+                   evidence_count=evidence_store.count(), new_evidence_count=added)
 
     state.evidence = (
         evidence_store.get_all()
@@ -152,6 +168,7 @@ def run_additional_research(
     review,
     evidence_store: EvidenceStore,
     state: ResearchState,
+    on_event: EventSink | None = None,
 ) -> None:
     """
     根据 Critic 给出的 research_queries
@@ -180,6 +197,17 @@ def run_additional_research(
                 )
             )
 
+        except APIConnectionError as exc:
+            emit_event(on_event, "warning", "re_research", "补充研究连接失败，保留已有证据")
+            # SDK retries have already been exhausted. Preserve collected
+            # evidence and let revision address the outstanding critic gaps.
+            logger.warning(
+                "Additional research model connection failed (%s); "
+                "continuing with existing evidence.",
+                type(exc).__name__,
+            )
+            evidence_list = []
+
         except (
             json.JSONDecodeError,
             TypeError,
@@ -202,6 +230,7 @@ def run_additional_research(
     )
 
 
+@workflow_lifecycle
 def run_research_pipeline(
     question: str | None = None,
     callback=None,
@@ -209,6 +238,7 @@ def run_research_pipeline(
     state: ResearchState | None = None,
     state_path: str | Path | None = None,
     memory_path: str | Path | None = None,
+    on_event: EventSink | None = None,
 ) -> ResearchState:
     """
     DeepResearch 完整 Workflow。
@@ -274,6 +304,7 @@ def run_research_pipeline(
             "Planner started",
         )
 
+        emit_event(on_event, "stage_started", "planner", "正在生成研究计划")
         memory_context = ""
 
         if memory_path:
@@ -302,6 +333,8 @@ def run_research_pipeline(
                 state.question
             )
 
+        emit_event(on_event, "stage_completed", "planner", "研究计划生成完成",
+                   subquestion_count=len(state.plan.sub_questions))
         state.status = (
             ResearchStatus.PLANNED
         )
@@ -365,11 +398,15 @@ def run_research_pipeline(
                 ),
             )
 
+        emit_event(on_event, "stage_started", "researcher", "正在检索研究证据")
         run_research_tasks(
             plan,
             evidence_store,
             state,
+            on_event=on_event,
         )
+        emit_event(on_event, "stage_completed", "researcher", "研究证据检索完成",
+                   evidence_count=evidence_store.count())
 
         checkpoint(
             state,
@@ -431,11 +468,14 @@ Evidence Store 去重后的证据。
 {evidence_text}
 """
 
+        emit_event(on_event, "stage_started", "writer", "正在撰写报告初稿")
         state.draft_report = (
             run_writer(
                 writer_input
             )
         )
+        state.draft_report = append_references(state.draft_report, state.evidence)
+        emit_event(on_event, "stage_completed", "writer", "报告初稿撰写完成")
 
         checkpoint(
             state,
@@ -469,6 +509,14 @@ Evidence Store 去重后的证据。
         resume_stage
         == ResumeStage.CRITIC
     ):
+        emit_event(on_event, "stage_started", "citation_validation", "正在校验报告引用")
+        validation = validate_citations(report_text, state.evidence)
+        emit_event(on_event, "stage_completed", "citation_validation", "报告引用校验完成",
+                   citation_count=validation.citation_count, invalid_citation_count=len(validation.invalid_citation_ids))
+        support_context = json.dumps(
+            build_support_context(validation, state.evidence), ensure_ascii=False, indent=2,
+        )
+        critic_body = report_body(report_text)
 
         emit(
             callback,
@@ -490,14 +538,14 @@ Research Goal：
 {plan.research_goal}
 
 
-Evidence：
+Evidence / Citation Support Batch：
 
-{evidence_text}
+{support_context}
 
 
 Research Report：
 
-{report_text}
+{critic_body}
 
 
 请严格审核这份 Research Report。
@@ -517,11 +565,13 @@ Research Report：
 你只负责审核，不要搜索。
 """
 
+        emit_event(on_event, "stage_started", "critic", "正在审查报告质量")
         try:
 
             review = run_critic(
                 critic_input
             )
+            review = merge_citation_review(review, validation)
 
             state.critic_review = (
                 review
@@ -539,6 +589,11 @@ Research Report：
             )
 
             review = None
+
+        emit_event(on_event, "stage_completed", "critic", "报告质量审查完成",
+                   needs_research=bool(review and review.needs_research))
+        if review and review.needs_research:
+            emit_event(on_event, "warning", "critic", "发现研究缺口")
 
         checkpoint(
             state,
@@ -569,11 +624,16 @@ Research Report：
         == ResumeStage.RE_RESEARCH
     ):
 
+        emit_event(on_event, "stage_started", "re_research", "正在根据研究缺口补充检索")
+        previous_count = evidence_store.count()
         run_additional_research(
             review,
             evidence_store,
             state,
+            on_event=on_event,
         )
+        emit_event(on_event, "stage_completed", "re_research", "补充研究完成",
+                   new_evidence_count=evidence_store.count() - previous_count)
 
         state.status = (
             ResearchStatus.REVISING
@@ -657,11 +717,14 @@ Critic 第一轮审核：
 6. 输出完整最终研究报告。
 """
 
+        emit_event(on_event, "stage_started", "revision", "正在修订研究报告")
         state.final_report = (
             run_writer(
                 revision_input
             )
         )
+        state.final_report = append_references(state.final_report, state.evidence)
+        emit_event(on_event, "stage_completed", "revision", "研究报告修订完成")
 
         state.status = (
             ResearchStatus.FINAL_REVIEWING
@@ -695,6 +758,14 @@ Critic 第一轮审核：
         resume_stage
         == ResumeStage.FINAL_CRITIC
     ):
+        emit_event(on_event, "stage_started", "citation_validation", "正在校验修订报告引用")
+        final_validation = validate_citations(final_report, state.evidence)
+        emit_event(on_event, "stage_completed", "citation_validation", "修订报告引用校验完成",
+                   citation_count=final_validation.citation_count, invalid_citation_count=len(final_validation.invalid_citation_ids))
+        final_support_context = json.dumps(
+            build_support_context(final_validation, state.evidence), ensure_ascii=False, indent=2,
+        )
+        final_critic_body = report_body(final_report)
 
         final_critic_input = f"""
 用户原始研究问题：
@@ -707,14 +778,14 @@ Research Goal：
 {plan.research_goal}
 
 
-最新 Evidence Store：
+Evidence / Citation Support Batch：
 
-{updated_evidence_text}
+{final_support_context}
 
 
 Writer 修订后的 Research Report：
 
-{final_report}
+{final_critic_body}
 
 
 请进行最终审核。
@@ -732,6 +803,7 @@ Writer 修订后的 Research Report：
 必须按照 Critic JSON Schema 输出。
 """
 
+        emit_event(on_event, "stage_started", "final_critic", "正在进行最终审查")
         try:
 
             state.final_review = (
@@ -739,6 +811,7 @@ Writer 修订后的 Research Report：
                     final_critic_input
                 )
             )
+            state.final_review = merge_citation_review(state.final_review, final_validation)
 
         except (
             json.JSONDecodeError,
@@ -752,6 +825,7 @@ Writer 修订后的 Research Report：
             )
 
             state.final_review = None
+        emit_event(on_event, "stage_completed", "final_critic", "最终审查完成")
 
     # ========================================================
     # Complete

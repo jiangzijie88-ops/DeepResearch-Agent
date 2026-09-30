@@ -48,6 +48,16 @@ def test_writer_chain_preserves_input_and_returns_markdown(completion, prompt):
     ]
     assert "tools" not in request
     assert "response_format" not in request
+    system = request["messages"][0]["content"]
+    assert "Only cite Evidence IDs explicitly provided" in system
+    assert "Never invent citation IDs" in system
+    assert "[E1][E2]" in system
+    assert "事实陈述" in system
+    # Both draft and revision use the same publication-year constraint.
+    assert "explicit publication-year range" in system
+    assert "out-of-range evidence" in system
+    assert "background evidence" in system
+    assert "not part of the requested paper list" in system
 
 
 def test_writer_propagates_model_failure(completion):

@@ -59,7 +59,7 @@ def test_critic_parses_review_and_preserves_evidence(completion, verdict, needs_
     prompt = 'Review report and Evidence: {"id": "E1", "verified": false}'
     review = run_critic(prompt)
     assert isinstance(review, CriticReview)
-    assert review.model_dump() == data
+    assert review.model_dump(exclude={"citation_validation", "claim_support_checks"}) == data
     if needs_research:
         assert isinstance(review.issues[0], CriticIssue)
     request = completion.call_args.kwargs
@@ -100,3 +100,28 @@ def test_critic_retries_a_response_without_the_review_tool(completion):
     completion.side_effect = [missing_tool, valid]
     assert run_critic("Review report").verdict == "PASS"
     assert completion.call_count == 2
+
+
+@pytest.mark.parametrize("status,claim,reason", [
+    ("supported", "Paper proposes graph retrieval.", "The supplied summary states this method."),
+    ("partially_supported", "Accuracy improves 35%.", "Evidence contains no 35% result."),
+    ("unsupported", "GraphRAG segments medical images.", "Medical segmentation evidence does not describe GraphRAG."),
+])
+def test_critic_structured_support_checks(completion, status, claim, reason):
+    data = {
+        "overall_assessment": "Evidence-grounded review", "issues": [], "evidence_gaps": [],
+        "needs_research": status != "supported",
+        "research_queries": ["GraphRAG evaluation results"] if status != "supported" else [],
+        "verdict": "PASS" if status == "supported" else "PASS_WITH_REVISIONS",
+        "claim_support_checks": [{"claim_id": "C1", "claim": claim,
+                                  "evidence_ids": ["E1"], "status": status, "reason": reason}],
+    }
+    respond(completion, data)
+    result = run_critic("Batch: " + json.dumps({"claim": claim, "evidence_ids": ["E1"]}))
+    assert result.claim_support_checks[0].status == status
+    assert result.claim_support_checks[0].reason == reason
+    assert result.needs_research == (status != "supported")
+    assert completion.call_count == 1
+    instructions = completion.call_args.kwargs["messages"][0]["content"]
+    assert "Judge support only from the supplied Evidence content" in instructions
+    assert "35%" in instructions

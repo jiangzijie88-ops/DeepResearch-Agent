@@ -1,231 +1,274 @@
 # DeepResearch-Agent
 
-A LangChain-based multi-agent research assistant.
+A multi-role academic Deep Research Agent built with LangChain, featuring evidence-grounded reports, citation validation, critic-guided re-research, resumable workflows, and realtime research progress.
 
-面向科研检索的多角色研究助手：自动拆解研究问题，调用学术或网页搜索工具，汇总结构化证据，生成研究报告并进行审核。项目提供
-CLI、FastAPI 和 Streamlit Web Demo，并通过自定义 Pipeline
-编排完整研究流程。
+面向学术研究的多角色研究助手：从一个问题出发，检索证据、撰写报告、审核引用与证据支持度，并按需补充研究。提供 CLI、FastAPI 和 Streamlit 入口。
 
-## 核心能力
+## Features
 
--   **多角色协作**：Planner → Researcher → Writer →
-    Critic，支持按需补充检索、报告修订与最终审核。
--   **动态工具调用**：Planner 为子问题选择 `paper_search`、`web_search`
-    或 `hybrid`，Researcher 使用 LangChain Tool Calling 执行对应搜索。
--   **多源学术检索**：聚合 OpenAlex 和 Semantic Scholar，并支持 DDGS Web
-    Search。
--   **结构化证据管理**：EvidenceStore 对
-    DOI、URL、标题及年份等信息进行去重与元数据合并。
--   **状态与记忆**：CLI 支持 checkpoint / resume，并通过 Persistent
-    Research Memory 保存历史研究记录。
--   **Web Demo**：Streamlit 前端通过 FastAPI 调用共用
-    Pipeline，展示研究报告与证据表格。
-
-## Web Demo
-
-Web 界面支持输入研究问题，并展示界面。
-
-![Web 研究报告](docs/images/1.png)
-
-## 工作流程
-
-``` mermaid
-flowchart TD
-    Web[Streamlit] --> API[FastAPI]
-    API --> Pipeline[workflow/pipeline.py]
-    CLI[main.py] --> Pipeline
-    Pipeline --> Planner[Planner: 拆解问题与 SearchType]
-    Planner --> Researcher[Researcher: 动态 Tool Calling]
-    Researcher --> Academic[OpenAlex + Semantic Scholar]
-    Researcher --> Search[DDGS Web Search]
-    Academic --> Evidence[EvidenceStore]
-    Search --> Evidence
-    Evidence --> Writer[Writer: 生成 Markdown 报告]
-    Writer --> Critic[Critic: 审核]
-    Critic --> Reresearch[按需 Re-Research]
-    Reresearch --> Revision[Writer Revision]
-    Revision --> FinalCritic[Final Critic]
-    FinalCritic --> Result[COMPLETED]
-```
-
-核心流程为：
-
-**Planner → Researcher → Writer → Critic → 按需 Re-Research → Revision →
-Final Critic**
-
-`workflow/pipeline.py` 负责流程编排、状态管理、Evidence Store
-和恢复；LangChain 相关模型、Prompt、Structured Output 与 Tool Calling
-逻辑主要封装在 `workers/` 和 `workflow/stages.py` 中。
+- Planner 拆解任务，Researcher 调用工具，Writer 写作与修订，Critic 审核与提出补搜问题。
+- OpenAlex + Semantic Scholar 聚合、单源失败时保留其他来源结果；DDGS 网页搜索通过工具路由使用。
+- Query-aware 词法排序，保留年份过滤、去重、预算和结果数量限制。
+- EvidenceStore 去重、元数据合并、稳定 Evidence ID、来源与检索时间记录。
+- 正文 `[E#]` 引用、程序化 References、两层引用与证据支持度校验。
+- 阶段级 Checkpoint / Resume、持久化 Research Memory。
+- FastAPI JSON API、实时 SSE、Streamlit 前端。
+- pytest 离线测试与 GitHub Actions 测试工作流。
 
 ## Architecture
 
-  -----------------------------------------------------------------------------------------
-  组件                                实现与职责
-  ----------------------------------- -----------------------------------------------------
-  Planner                             `ChatPromptTemplate` + Structured Output，生成
-                                      Pydantic `ResearchPlan`
-
-  Researcher                          LangChain Tool Calling，根据 `SearchType`
-                                      动态调用学术或网页搜索工具
-
-  Writer                              LCEL
-                                      Chain：`prompt \| model \| StrOutputParser()`，基于
-                                      Evidence 生成或修订报告
-
-  Critic                              Structured Output，返回
-                                      `CriticReview`，负责初次审核和 Final Critic
-
-  Memory                              Persistent Research Memory，保存历史研究记录并向
-                                      Planner 提供上下文
-
-  Tools                               `paper_search` + `web_search`，使用 LangChain `@tool`
-                                      封装搜索能力
-
-  Workflow                            自定义 Pipeline
-                                      Orchestration，负责阶段执行、状态与恢复
-  -----------------------------------------------------------------------------------------
-
-模型层基于 `langchain_openai.ChatOpenAI`，支持 DeepSeek /
-OpenAI-compatible API。项目使用自定义 Pipeline 编排工作流，不直接使用
-LangGraph API。
-
-Memory、Context 与 State 的职责不同：**Research Memory**
-持久化历史研究记录；**Message Context** 保存单次调用中的
-Prompt、模型消息和工具结果；**State / Resume** 保存 Pipeline
-阶段进度并支持 checkpoint 恢复。
-
-## 技术栈
-
-Python 3.11、LangChain / LangChain Core / LangChain OpenAI、Pydantic
-2、FastAPI、Uvicorn、Streamlit、OpenAlex、Semantic
-Scholar、DDGS、pytest、HTTPX、Git。
-
-## 项目结构
-
-``` text
-DeepResearch-Agent/
-├── api/server.py              # FastAPI 后端接口
-├── frontend/app.py            # Streamlit Web UI
-├── workers/                   # Planner / Researcher / Writer / Critic
-├── workflow/                  # Pipeline、阶段调用、路由与恢复
-├── models/                    # State、Evidence、论文及审核等数据模型
-├── tools/academic/            # OpenAlex、Semantic Scholar 与聚合器
-├── tools/                     # 学术与 Web 搜索工具
-├── memory.py                  # Persistent Research Memory
-├── tests/                     # 离线回归测试
-├── main.py                    # CLI 入口
-├── llm.py                     # LLM 配置
-└── requirements.txt           # 项目依赖
+```mermaid
+flowchart TD
+    U[User Question] --> P[Planner]
+    P --> R[Researcher]
+    R --> T[Academic / Web Tools]
+    T --> E[EvidenceStore: merge / dedup / stable IDs]
+    E --> W[Writer: Draft]
+    W --> V[Citation Validation]
+    V --> C[Critic]
+    C --> G{Evidence gap?}
+    G -->|yes| RR[Re-Research via Researcher and Tools]
+    RR --> NE[Merge new Evidence into same Store]
+    NE --> RV[Writer: Revision]
+    G -->|no| RV
+    RV --> FV[Final Citation Validation]
+    FV --> FC[Final Critic]
+    FC --> F[Final Report]
 ```
 
-## 快速开始
+初稿和修订稿生成后，Python 均根据正文引用附加 References；引用校验分离正文与参考文献。无需补搜时仍执行 Revision 和 Final Critic。Final Critic 后结束本次流程，不会无限循环研究。
 
-### 1. 安装环境
+| 组件 | 职责 |
+|---|---|
+| Planner | Prompt + Structured Output，生成研究目标、子问题和 SearchType |
+| Researcher | 受工具路由约束的 Tool Calling 循环，返回结构化 Evidence |
+| Writer | Prompt Chain 生成初稿与修订稿，不调用搜索工具 |
+| Critic | Structured Output，检查报告与证据支持度，返回问题和补搜建议 |
+| EvidenceStore | 统一去重、合并元数据和分配稳定 ID |
+| Pipeline | 确定性阶段编排、检查点、恢复、进度回调与角色衔接 |
 
-``` bash
+**LangChain implements role-level LLM capabilities such as Prompt Chains, Structured Output and Tool Calling, while a custom Python Pipeline handles deterministic workflow orchestration.** 项目没有使用 LangGraph 编排，也不是多个自主 Agent 自由协作。
+
+## Evidence Grounding
+
+EvidenceStore 分配任务内稳定的 E1、E2 等 ID。Writer 在事实陈述旁生成 `[E1][E2]`；Python 将这些指针解析到 Store 中的 title、authors、year、DOI 和 URL，生成引用过的证据条目。
+
+**LLM generates citation pointers; deterministic Python code resolves citation metadata.** Writer 不生成自由格式参考文献；未知 ID 不会被补造 References。这个设计降低参考文献元数据被编造的风险，但输入 Evidence 仍可能不完整或不准确，引用存在也不等于结论真实。
+
+## Citation Validation
+
+1. **Deterministic Python Validation**：检查支持的 `[E#]` 格式和 ID 是否存在，分离 References，提取带引用的陈述并建立 claim ↔ citation 映射。
+2. **Critic Evidence Support Review**：在现有 Critic 调用中，基于引用指向的 Evidence 给出 supported、partially_supported 或 unsupported。遗漏或不匹配的支持度检查记录为未完成，不能默认通过。
+
+Critic 判断需要补充证据时，沿用 Evidence Gap → Research Query → Re-Research → New Evidence → Revision 流程。校验面向已检索的 Evidence，不是独立事实核验保证。
+
+## Query-aware Academic Search
+
+```text
+User query → OpenAlex + Semantic Scholar
+           → Candidate Papers → merge / dedup
+           → year filter / cross-call dedup
+           → lexical relevance ranking → top results
+```
+
+排序使用 query token 在标题与摘要中的覆盖率（权重 0.7 / 0.3），标题完整词序列匹配加 0.1，最高 1.0。同分保持输入顺序，不以引用量或年份代替相关性，不通过分数阈值删除候选。`paper_search` 每次最多返回 5 篇。
+
+这是 lightweight lexical relevance，不使用 Embedding、BM25 或 Vector Search。学术检索不限于推荐系统主题，可用于 RAG、医学图像分割、LLM agents、数据库优化等问题。两家学术 provider 分别尝试；这不表示失败后一定自动转为网页搜索，网页工具可用性由 SearchType 决定。
+
+## Realtime Research Progress
+
+```text
+Pipeline → WorkflowEvent → callback → request-local Queue
+         → FastAPI StreamingResponse → SSE → Streamlit
+```
+
+同步 Pipeline 在工作线程中执行，阶段事件立即进入当前请求的队列，无需等待完整报告。事件字段为 type、stage、message、data；支持：
+
+```text
+workflow_started / stage_started / stage_completed
+progress / warning / workflow_completed / workflow_failed
+```
+
+这是 **stage-level realtime progress**，不逐 token 输出模型文本，也不展示 Prompt 或隐藏推理。最终报告与证据只在 `workflow_completed.data` 中发送。失败时发送安全的 workflow_failed 并结束流；SSE 已开始后需检查事件，不能仅靠 HTTP 200 判断研究成功。
+
+## Project Structure
+
+```text
+DeepResearch-Agent/
+├── api/                  # JSON API、SSE 与线程队列桥接
+├── frontend/             # Streamlit UI、增量 SSE 解析
+├── models/               # Paper、Evidence、Store、State、Critic 数据模型
+├── workers/              # 四个角色的 Prompt / Chain / Tool Calling
+├── workflow/             # Pipeline、路由、引用处理、事件、恢复
+├── tools/                # 学术及网页搜索，academic/ 含 provider 与排序
+├── tests/                # 离线单元及集成测试
+├── docs/                 # 项目图片和验证记录
+├── .github/workflows/    # GitHub Actions 测试
+├── main.py               # CLI 入口
+├── llm.py                # 模型配置工厂
+├── memory.py             # 持久化研究记忆
+├── requirements.txt      # 固定版本的直接依赖
+├── .env.example          # 不含凭据的环境变量模板
+└── README.md
+```
+
+## Quick Start
+
+已验证的开发环境为 Python 3.11。需要能访问所选模型和检索服务的网络。
+
+```bash
+git clone https://github.com/jiangzijie88-ops/DeepResearch-Agent.git
+cd DeepResearch-Agent
 conda create -n deepresearch python=3.11
 conda activate deepresearch
 python -m pip install -r requirements.txt
 ```
 
-### 2. 配置模型
+复制配置模板（已有 .env 时不要覆盖）：
 
-
-DeepSeek：
-
-``` dotenv
-LLM_PROVIDER=deepseek
-DEEPSEEK_API_KEY=your-api-key
-DEEPSEEK_MODEL=your-model-name
-DEEPSEEK_BASE_URL=https://api.deepseek.com
+```bash
+cp .env.example .env
 ```
 
-OpenAI：
+Windows PowerShell 使用 `Copy-Item .env.example .env`，cmd 使用 `copy .env.example .env`。编辑 .env：
 
-``` dotenv
-LLM_PROVIDER=openai
-OPENAI_API_KEY=your-api-key
-OPENAI_MODEL=your-model-name
-OPENAI_BASE_URL=https://api.openai.com/v1
-```
+| 变量 | 说明 |
+|---|---|
+| LLM_PROVIDER | deepseek（默认）或 openai |
+| DEEPSEEK_API_KEY / DEEPSEEK_MODEL / DEEPSEEK_BASE_URL | 选择 deepseek 时三项必填 |
+| OPENAI_API_KEY / OPENAI_MODEL / OPENAI_BASE_URL | 选择 openai 时三项必填 |
+| OPENALEX_API_KEY | 学术 provider 凭据，由 OpenAlex adapter 读取 |
+| SEMANTIC_SCHOLAR_API_KEY | 学术 provider 凭据，由 Semantic Scholar adapter 读取 |
 
-可选学术检索配置：
+模型名称与 base URL 填写你所选服务实际提供的值。模型需支持 Tool Calling 和结构化输出；代码使用 Chat Completions，并为 DeepSeek 配置关闭 thinking。未选择的模型 provider 字段可以留空。学术 adapter 允许未提供 key，但服务是否接受请求、配额与限流取决于 provider。
 
-``` dotenv
-OPENALEX_API_KEY=your-openalex-key
-SEMANTIC_SCHOLAR_API_KEY=your-semantic-scholar-key
-```
+真实研究会调用外部服务，可能产生模型费用；测试使用 fake 数据与安全 dummy 配置。不要提交 .env。
 
-`LLM_PROVIDER` 未配置时默认为 `deepseek`。所选模型需支持 Tool Calling。
+## CLI Usage and Resume
 
-### 3. 启动 Web Demo
-
-分别打开两个终端，并在项目根目录运行：
-
-``` bash
-# 终端 1：FastAPI 后端
-python -m uvicorn api.server:app --reload
-```
-
-``` bash
-# 终端 2：Streamlit 前端
-python -m streamlit run frontend/app.py
-```
-
-启动后访问 Web 页面 `http://localhost:8501`，API 文档位于
-`http://127.0.0.1:8000/docs`。
-
-### 4. CLI 与 Resume
-
-``` bash
+```bash
 python main.py
 ```
 
-CLI 运行产生的日志、报告、审核结果、checkpoint 和记忆保存在 `outputs/`。
+按提示输入问题。CLI 在 outputs/ 保存 report_*.md、critic_*.json（有最终审核时）、state_*.json、workflow_*.log 和 memory.json。
 
-``` bash
+```bash
 python main.py --resume outputs/state_YYYYMMDD_HHMMSS.json
 ```
 
-Resume 以 Pipeline 阶段为粒度，不是单个工具调用级别的精确续跑。
+替换为实际检查点路径。Resume 是 **stage-level recovery**：重启未完成的阶段，不是从中断的模型 token 或工具调用精确续跑；已完成检查点直接展示结果并退出。Research Memory 是历史上下文，ResearchState 是当前任务检查点，两者职责不同。
 
-## 示例问题
+## FastAPI
 
-``` text
-查找 2024–2025 年关于图神经网络的多模态推荐论文，
-简述核心方法并给出来源。
+在项目根目录启动：
+
+```bash
+python -m uvicorn api.server:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-## 测试
+交互文档：<http://127.0.0.1:8000/docs>。
 
-``` bash
+| 接口 | 行为 |
+|---|---|
+| GET / | 服务存活信息 |
+| POST /research | 同步研究，完成后返回 JSON |
+| POST /research/stream | 实时 SSE 阶段事件，最后返回报告 |
+
+两个 POST 接口的请求均为 `{"question": "..."}`。以下为 Bash/curl 示例：
+
+```bash
+curl -X POST http://127.0.0.1:8000/research \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"Find GraphRAG papers from 2024 to 2026 and summarize major research directions."}'
+
+curl -N -X POST http://127.0.0.1:8000/research/stream \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"Find GraphRAG papers from 2024 to 2026 and summarize major research directions."}'
+```
+
+普通响应字段为 question、status、report、evidence_count、evidence。SSE 每帧以空行结束，JSON 支持中文，例如：
+
+```text
+event: stage_started
+data: {"type":"stage_started","stage":"planner","message":"正在生成研究计划","data":{}}
+
+```
+
+该流使用 POST，客户端需增量读取响应；浏览器原生 EventSource 的 GET 调用方式不适用于此接口。
+
+## Streamlit
+
+保持 FastAPI 运行，在第二个终端执行：
+
+```bash
+conda activate deepresearch
+python -m streamlit run frontend/app.py
+```
+
+打开 <http://localhost:8501>。Streamlit 从 http://127.0.0.1:8000/research/stream 逐条消费 SSE 并更新进度，最终显示报告和证据表格。路径为 **Streamlit → FastAPI → Pipeline**。
+
+CLI 和 Web 共用研究流程与 Research Memory；Web 当前没有 checkpoint/resume 接口，也不自动保存 CLI 的整套报告与日志文件。
+
+## Example / Demo
+
+问题：
+
+> Find GraphRAG papers from 2024 to 2026 and summarize major research directions.
+
+下面是**格式示意**，不是一次真实运行的逐字记录；数字和证据名是占位示例：
+
+```text
+正在生成研究计划 → 研究计划生成完成
+正在检索研究证据 → 已收集研究证据（17 条证据）
+正在撰写报告初稿 → 正在校验报告引用
+正在审查报告质量 → 按需补搜 → 正在修订研究报告
+正在校验修订报告引用 → 正在进行最终审查 → 研究完成
+```
+
+报告结构示意：
+
+```markdown
+## 目标时间范围内论文（2024–2026）
+根据检索证据归纳的方法与研究方向…… [E1]
+
+## 背景参考
+范围外论文只用于背景分析，并明确标注年份…… [E2]
+
+## References
+[E1] <目标范围内论文标题>. <作者>. <年份>.
+URL: <Evidence 中的来源地址>
+
+[E2] <背景论文标题>. <作者>. 2023.
+URL: <Evidence 中的来源地址>
+```
+
+年份分组由初稿和修订共用的 Writer 指令约束，不是额外的确定性报告过滤器。
+
+已有界面截图（历史报告展示，不作为当前实时进度的验证记录）：
+
+![Streamlit 研究报告界面](docs/images/1.png)
+
+## Tests
+
+```bash
 python -m pytest -q
-python -m py_compile main.py workflow/pipeline.py api/server.py frontend/app.py models/research_state.py
 python -m pip check
 ```
 
-离线测试覆盖 LangChain Chain、Tool Calling、结构化解析、Evidence
-Store、Pipeline、Resume、API 和 Streamlit 界面，不需要真实 API
-Key。正式使用前建议通过 CLI 或 Web Demo 完成一次真实端到端验证。
+测试隔离 .env，使用 fake 模型、provider 和 HTTP transport，阻止 Requests / HTTPX 真实请求。覆盖角色链、检索排序、去重、引用校验、Pipeline、Resume、API、SSE 和 Streamlit。
 
-## CLI 与 Web
+最近本地验证（2026-09-30，Windows / Python 3.11）：**238 passed / 0 failed**；使用 `python -m pytest -q -p no:cacheprovider`，仅关闭 pytest 缓存。`pip check` 通过。本轮没有重新创建全新环境安装依赖，也没有调用真实外部 API。
 
-  能力                          CLI   Web
-  ----------------------------- ----- -----
-  完整研究 Pipeline             ✓     ✓
-  Evidence 去重与合并           ✓     ✓
-  Critic 补搜、修订与最终审核   ✓     ✓
-  checkpoint / resume           ✓     ---
-  Persistent Research Memory    ✓     ---
-  报告与审核结果自动落盘        ✓     ---
-  Web 报告与证据表格            ---   ✓
+SSE 测试让 Fake Pipeline 发出早期事件后阻塞，客户端收到该事件才解除阻塞，证明 Pipeline 完成前即可收到进度。
 
-## 已知限制
+GitHub Actions 配置位于 [tests.yml](.github/workflows/tests.yml)，在 push / pull request 时使用 Ubuntu 和 Python 3.11 安装依赖并执行 `python -m pytest -q`。依赖安装需要网络，测试不需要真实 API key。新增工作流尚待首次远端运行验证，不展示未经验证的绿色 CI 徽章。
 
--   当前 Web Demo
-    为同步执行，主要面向本地单用户使用；尚未提供任务队列、鉴权和实时 SSE
-    / WebSocket。
--   外部学术与网页检索受网络、API 限流和数据源可用性影响。
--   Critic 用于报告审核，但 `COMPLETED`
-    仅表示流程执行结束，不代表所有内容均经过独立事实核验。
--   Resume 为阶段级 checkpoint 恢复，不支持工具调用级精确续跑。
+## Limitations
+
+- 检索覆盖和质量取决于 provider 可用性、查询质量和元数据完整性；引用量是随时间变化的快照。
+- 排序是词法匹配，不能替代语义检索；学术工具保留年份与结果数量限制。
+- 引用校验衡量已检索 Evidence 的支持度，不能保证绝对事实正确或捕获全部未引用陈述。
+- 年份分组是 Prompt 约束，模型仍可能违反，需人工检查；completed 只表示流程结束，不代表最终审核无问题。
+- Resume 是阶段级恢复；SSE 是阶段进度，不是 token streaming。断开 SSE 不会强制取消执行中的模型请求。
+- Web 没有复用 CLI 全局 stdout/stderr 文件日志机制，详细执行信息仍见服务端终端。
+- 项目面向本地使用：SSE 队列按请求隔离，但搜索预算/跨调用去重和磁盘 Memory 仍有进程共享状态，不承诺完整多用户并发隔离；没有鉴权或部署加固。

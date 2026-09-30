@@ -3,6 +3,7 @@ import threading
 
 from dotenv import load_dotenv
 from langchain_core.tools import tool
+from tools.academic.relevance import rank_papers
 
 from tools.academic.aggregator import (
     search_academic_papers,
@@ -30,130 +31,6 @@ def reset_paper_search_count():
         _seen_paper_ids.clear()
 
 
-
-def _calculate_relevance_score(
-    title: str,
-    abstract: str | None = None,
-) -> tuple[bool, int]:
-    """
-    First apply hard relevance gates,
-    then calculate a soft relevance score.
-
-    Returns:
-        (passed_hard_gate, relevance_score)
-    """
-
-    title_lower = (
-        title
-        or ""
-    ).lower()
-
-    abstract_lower = (
-        abstract
-        or ""
-    ).lower()
-
-    full_text = (
-        title_lower
-        + " "
-        + abstract_lower
-    )
-
-    # =========================================
-    # 1. Recommendation evidence
-    # =========================================
-    recommendation_keywords = [
-        "recommendation",
-        "recommender",
-        "recommend",
-        "collaborative filtering",
-    ]
-
-    has_recommendation = any(
-        keyword in full_text
-        for keyword in recommendation_keywords
-    )
-
-    # =========================================
-    # 2. Multimodal evidence
-    # =========================================
-    multimodal_keywords = [
-        "multimodal",
-        "multi-modal",
-        "multimedia",
-        "multiple modalities",
-        "visual and textual",
-        "visual modality",
-        "textual modality",
-    ]
-
-    has_multimodal = any(
-        keyword in full_text
-        for keyword in multimodal_keywords
-    )
-
-    # =========================================
-    # 3. Graph / GNN evidence
-    # =========================================
-    graph_keywords = [
-        "graph neural network",
-        "graph convolution",
-        "graph attention",
-        "graph learning",
-        "graph-based",
-        "gnn",
-    ]
-
-    has_graph = any(
-        keyword in full_text
-        for keyword in graph_keywords
-    )
-
-    # =========================================
-    # Hard Gate
-    # =========================================
-    passed_hard_gate = (
-        has_recommendation
-        and has_multimodal
-        and has_graph
-    )
-
-    if not passed_hard_gate:
-        return False, 0
-
-    # =========================================
-    # Soft Score
-    # =========================================
-    score = 0
-
-    # Recommendation
-    if any(
-        keyword in title_lower
-        for keyword in recommendation_keywords
-    ):
-        score += 3
-    else:
-        score += 1
-
-    # Multimodal
-    if any(
-        keyword in title_lower
-        for keyword in multimodal_keywords
-    ):
-        score += 3
-    else:
-        score += 1
-
-    # Graph / GNN
-    if any(
-        keyword in title_lower
-        for keyword in graph_keywords
-    ):
-        score += 3
-    else:
-        score += 1
-
-    return True, score
 
 def _search_academic_sources(
     query: str,
@@ -230,7 +107,7 @@ def paper_search(
     print("=" * 60)
 
     # =========================================
-    # Search OpenAlex through provider
+    # Search academic providers
     # =========================================
     try:
         papers = _search_academic_sources(
@@ -262,9 +139,9 @@ def paper_search(
         )
 
     # =========================================
-    # Topic relevance filtering
+    # Year filtering and deduplication
     # =========================================
-    relevant_papers = []
+    candidate_papers = []
 
     for paper in papers:
 
@@ -277,26 +154,6 @@ def paper_search(
 
         if year < start_year or year > end_year:
             continue
-
-        passed_hard_gate, relevance_score = (
-            _calculate_relevance_score(
-                title=paper.title,
-                abstract=paper.abstract,
-            )
-        )
-
-        if not passed_hard_gate:
-            print(
-                f"[Hard Filter] "
-                f"Skipping irrelevant paper: "
-                f"{title}"
-            )
-            continue
-
-        paper_with_score = (
-            paper,
-            relevance_score,
-        )
 
         # =========================================
         # Deduplicate papers across search calls
@@ -336,39 +193,31 @@ def paper_search(
 
             _seen_paper_ids.add(paper_id)
 
-        relevant_papers.append(
-            paper_with_score
-        )
+        candidate_papers.append(paper)
 
-    relevant_papers.sort(
-        key=lambda item: item[1],
-        reverse=True,
-    )
-
-    if not relevant_papers:
+    if not candidate_papers:
 
         print(
             "[Tool Result] Academic papers were returned, "
-            "but none passed relevance filtering."
+            "but none remained after year filtering and deduplication."
         )
 
         return (
             "Academic search returned papers, "
-            "but none matched the requested topic "
-            "after year and relevance filtering."
+            "but none remained after year filtering and deduplication."
         )
 
     # 最终最多返回 5 篇
-    relevant_papers = relevant_papers[:5]
+    candidate_papers = [
+        result.paper for result in rank_papers(query, candidate_papers)[:5]
+    ]
 
     formatted_results = []
 
-    for i, item in enumerate(
-        relevant_papers,
+    for i, paper in enumerate(
+        candidate_papers,
         start=1,
     ):
-
-        paper, relevance_score = item
 
         title = (
             paper.title
@@ -428,8 +277,6 @@ def paper_search(
             f"Published At: {published_at}\n"
             f"Venue: {venue}\n"
             f"Citations: {citation_text}\n"
-            f"Relevance Score: "
-            f"{relevance_score}\n"
             f"Source: {paper.source}\n"
             f"DOI: {doi}\n"
             f"URL: {url}\n"

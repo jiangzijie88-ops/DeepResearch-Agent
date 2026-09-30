@@ -1,4 +1,26 @@
 from pydantic import BaseModel, Field
+from typing import Literal
+
+
+class CitationClaim(BaseModel):
+    claim_id: str
+    claim: str
+    evidence_ids: list[str]
+
+
+class CitationValidationResult(BaseModel):
+    citation_ids: list[str] = Field(default_factory=list)
+    valid_citation_ids: list[str] = Field(default_factory=list)
+    invalid_citation_ids: list[str] = Field(default_factory=list)
+    citation_count: int = 0
+    is_valid: bool = True
+    warnings: list[str] = Field(default_factory=list)
+    claims: list[CitationClaim] = Field(default_factory=list)
+
+
+class ClaimSupportCheck(CitationClaim):
+    status: Literal["supported", "partially_supported", "unsupported"]
+    reason: str
 
 
 class CriticIssue(BaseModel):
@@ -17,6 +39,8 @@ class CriticIssue(BaseModel):
 
 
 class CriticReview(BaseModel):
+    citation_validation: CitationValidationResult | None = None
+    claim_support_checks: list[ClaimSupportCheck] = Field(default_factory=list)
 
     overall_assessment: str = Field(
         description="对报告整体质量的评价"

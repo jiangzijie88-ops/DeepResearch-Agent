@@ -1,5 +1,6 @@
 ﻿import requests
 import streamlit as st
+from frontend.streaming import iter_workflow_events
 
 
 st.set_page_config(
@@ -579,13 +580,18 @@ if run:
         status_placeholder = st.empty()
         with status_placeholder.container():
             status_box = st.container(border=True, key="research_status")
-            status_box.info("正在生成报告，请稍等…")
+            status_box.caption("研究进度")
+            progress_display = status_box.empty()
+            progress_display.info("正在连接研究服务…")
+        response = None
+        progress_lines = []
         with st.spinner("正在研究中，可能需要数分钟..."):
             try:
                 response = requests.post(
-                    "http://127.0.0.1:8000/research",
+                    "http://127.0.0.1:8000/research/stream",
                     json={"question": question},
                     timeout=600,
+                    stream=True,
                 )
                 if response.status_code != 200:
                     suggestions = {
@@ -602,15 +608,39 @@ if run:
                         + suggestions.get(response.status_code, "请检查后端服务后重试。")
                     )
                 else:
-                    result = response.json()
-                    if (
-                        not isinstance(result, dict)
-                        or not isinstance(result.get("report"), str)
-                        or not isinstance(result.get("evidence"), list)
-                        or not all(isinstance(item, dict) for item in result["evidence"])
-                    ):
-                        raise ValueError("Invalid research response")
-                    st.session_state.research_result = result
+                    response.encoding = "utf-8"
+                    terminal = False
+                    for event in iter_workflow_events(response.iter_lines(chunk_size=1, decode_unicode=True)):
+                        kind = event["type"]
+                        if kind == "workflow_failed":
+                            st.error(event.get("message") or "研究执行失败，请检查后端日志后重试。")
+                            terminal = True
+                            break
+                        if kind == "workflow_completed":
+                            result = event.get("data")
+                            if (
+                                not isinstance(result, dict)
+                                or not isinstance(result.get("report"), str)
+                                or not isinstance(result.get("evidence"), list)
+                                or not all(isinstance(item, dict) for item in result["evidence"])
+                            ):
+                                raise ValueError("Invalid research response")
+                            st.session_state.research_result = result
+                            terminal = True
+                            break
+                        message = event.get("message", "")
+                        if not isinstance(message, str):
+                            raise ValueError("Invalid progress message")
+                        data = event.get("data") or {}
+                        if not isinstance(data, dict):
+                            raise ValueError("Invalid progress data")
+                        if "evidence_count" in data:
+                            message += f"（{data['evidence_count']} 条证据）"
+                        prefix = "✓" if kind == "stage_completed" else "⚠" if kind == "warning" else "→"
+                        progress_lines.append(f"{prefix} {message}")
+                        progress_display.markdown("\n\n".join(progress_lines[-8:]))
+                    if not terminal:
+                        raise ValueError("Stream ended before a terminal event")
             except requests.Timeout:
                 st.error("研究请求超时。请缩小问题范围后重试；后端任务可能仍在运行。")
             except requests.ConnectionError:
@@ -622,6 +652,8 @@ if run:
             except requests.RequestException:
                 st.error("研究请求失败，请检查网络和后端服务后重试。")
             finally:
+                if response is not None:
+                    response.close()
                 status_placeholder.empty()
 
 

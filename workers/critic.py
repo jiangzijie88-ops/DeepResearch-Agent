@@ -30,6 +30,26 @@ CRITIC_INSTRUCTIONS = """
 9. 是否存在重要 Evidence Gap。
 10. 是否需要补充搜索。
 
+Citation-aware Evidence Support（初审和最终审核都必须执行）：
+- 输入的 citation_validation 是 Python 的确定性检查结果；不要重新猜测 ID 是否存在，
+  不得将 invalid_citation_ids 判为有效。citation_validation 输出字段留空，由系统写入真实结果。
+- claims 是本次批量审核任务。对 semantic_validation=true 的每个单元返回一条
+  claim_support_checks，原样复制 claim_id、claim、evidence_ids，并填写 status 和 reason。
+- Judge support only from the supplied Evidence content. 对每个 Claim 只使用该单元的
+  evidence，不使用参数知识、其他 Claim 的证据或 URL 背后未提供的全文。
+- status 只能为 supported、partially_supported、unsupported。ID 存在不等于支持 Claim。
+  多条引用可以联合支持；逐项考虑方法、年份、venue、引用量、数值和实验条件。
+- 如果 summary 只说 improves accuracy，没有 35% 的数据，则含 35% 的 Claim 不能判 supported。
+  如果引用论文主题不匹配，则判 unsupported；reason 必须指出不匹配或缺失的具体信息。
+- semantic_validation=false 表示没有任何可用的引用证据：跳过语义判定，在 issues 中报告无效引用。
+  含部分无效 ID 的单元只能基于仍存在的引用证据审核；不能掩盖确定性错误。
+- 对不足或错误支持，结合原有 issues/evidence_gaps 给出修订建议；若需要新证据，设置
+  needs_research=true 并给出具体 research_queries，复用现有补搜流程。
+  引用错配也可要求删除/替换 Claim；不得仅因“可能正确”而保留它。
+- 不要求标题、结构介绍和过渡句逐句引用。没有正文引用时，继续常规质量审核，
+  把缺少引用作为 warning，不假装已经完成语义支持检查。
+- 这是基于当前 Evidence 的支持度审核，不是真实世界事实正确性的保证。
+
 如果存在证据缺口，需要生成可以直接交给 Researcher 执行的补搜问题。
 
 请通过 CriticReview 结构化输出返回审核结果。
@@ -57,7 +77,16 @@ CRITIC_INSTRUCTIONS = """
   "research_queries": [
     "需要交给 Researcher 执行的具体补搜问题"
   ],
-  "verdict": "PASS_WITH_REVISIONS"
+  "verdict": "PASS_WITH_REVISIONS",
+  "claim_support_checks": [
+    {
+      "claim_id": "C1",
+      "claim": "从输入原样复制",
+      "evidence_ids": ["E1"],
+      "status": "partially_supported",
+      "reason": "证据支持的部分及缺失信息"
+    }
+  ]
 }
 
 规则：
