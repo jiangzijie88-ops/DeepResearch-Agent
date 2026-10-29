@@ -82,7 +82,7 @@ def test_pipeline_completes_even_when_critic_requests_revision(
 
     assert (
         state.final_report
-        == "# 测试报告"
+        == "# 测试报告\n\n## 研究子问题\n\n1. 论文\n2. 网页"
     )
 
     assert (

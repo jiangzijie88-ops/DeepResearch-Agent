@@ -1,5 +1,8 @@
 from pathlib import Path
 
+from datetime import datetime
+from uuid import uuid4
+
 from fastapi import FastAPI, HTTPException
 from openai import APIConnectionError, APIStatusError, APITimeoutError
 from pydantic import BaseModel, Field
@@ -13,6 +16,22 @@ from workflow.pipeline import (
 
 
 MEMORY_PATH = Path(__file__).resolve().parents[1] / "outputs" / "memory.json"
+REPORT_DIR = MEMORY_PATH.parent
+
+
+def run_and_save_report(question: str, *, on_event=None):
+    """Persist the displayed report before returning a successful API result."""
+    kwargs = {"memory_path": MEMORY_PATH}
+    if on_event is not None:
+        kwargs["on_event"] = on_event
+    state = run_research_pipeline(question, **kwargs)
+    report = state.final_report or state.draft_report
+    if report:
+        REPORT_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = REPORT_DIR / f"report_{timestamp}_{uuid4().hex[:12]}.md"
+        path.write_text(report, encoding="utf-8")
+    return state
 
 
 app = FastAPI(
@@ -60,9 +79,8 @@ def research(
     request: ResearchRequest,
 ):
     try:
-        state = run_research_pipeline(
+        state = run_and_save_report(
             request.question,
-            memory_path=MEMORY_PATH,
         )
     except APITimeoutError as error:
         raise HTTPException(
@@ -118,8 +136,8 @@ def research(
 @app.post("/research/stream")
 def research_stream(request: ResearchRequest):
     return StreamingResponse(
-        stream_events(lambda on_event: run_research_pipeline(
-            request.question, memory_path=MEMORY_PATH, on_event=on_event,
+        stream_events(lambda on_event: run_and_save_report(
+            request.question, on_event=on_event,
         )),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},

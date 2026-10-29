@@ -14,6 +14,29 @@ from models.research_state import (
 client = TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def isolated_report_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr("api.server.REPORT_DIR", tmp_path / "reports", raising=False)
+
+
+@pytest.mark.parametrize("endpoint", ["/research", "/research/stream"])
+def test_api_automatically_saves_markdown_report(monkeypatch, tmp_path, endpoint):
+    from api import server
+
+    report = "# 中文研究报告\n\n[论文](https://example.org/paper)"
+
+    def pipeline(question, **kwargs):
+        return ResearchState(question=question, final_report=report)
+
+    monkeypatch.setattr(server, "run_research_pipeline", pipeline)
+    for _ in range(2):
+        response = client.post(endpoint, json={"question": "研究问题"})
+        assert response.status_code == 200
+    files = list(server.REPORT_DIR.glob("report_*.md"))
+    assert len(files) == 2
+    assert all(path.read_text(encoding="utf-8") == report for path in files)
+
+
 
 def test_root():
 

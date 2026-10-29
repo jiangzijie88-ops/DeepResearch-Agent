@@ -1,5 +1,6 @@
 ﻿import requests
 import streamlit as st
+from datetime import datetime
 from frontend.streaming import iter_workflow_events
 
 
@@ -665,6 +666,13 @@ if result is not None:
         st.caption(f"研究问题：{result.get('question', '')}")
         st.subheader("📄 研究报告")
         st.markdown(result["report"])
+        st.download_button(
+            label="下载报告（Markdown）",
+            data=result["report"].encode("utf-8"),
+            file_name=f"report_{datetime.now():%Y%m%d_%H%M%S}.md",
+            mime="text/markdown",
+            on_click="ignore",
+        )
         evidence = result["evidence"]
         st.metric("证据数量", len(evidence))
         with st.expander("查看研究证据", expanded=True):

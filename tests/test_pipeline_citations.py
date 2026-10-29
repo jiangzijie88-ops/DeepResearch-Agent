@@ -78,6 +78,7 @@ def test_citations_survive_reresearch_revision_and_checkpoint(monkeypatch, tmp_p
         state = pipeline.run_research_pipeline("test", state_path=path)
     assert len(prompts) == (1 if resume else 2)
 
+    assert "## 研究子问题\n\n1. initial" in state.final_report
     assert [e.evidence_id for e in state.evidence] == ["E1", "E2", "E3"]
     assert state.evidence[0].source == "OpenAlex | Semantic Scholar"
     refs = state.final_report.split("## References\n", 1)[1]

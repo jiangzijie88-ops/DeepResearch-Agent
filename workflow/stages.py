@@ -36,7 +36,10 @@ def utc_now() -> datetime:
 def run_planner(question: str, memory_context: str = '', runner=None) -> ResearchPlan:
     """Run the Planner chain; runner optionally injects a LangChain Runnable."""
     chain = create_planner_chain() if runner is None else runner
-    result = chain.invoke({'question': question, 'memory_context': memory_context})
+    result = chain.invoke({
+        'question': question, 
+        'memory_context': memory_context
+    })
     return ResearchPlan.model_validate(result)
 
 def run_writer(prompt: str, runner=None) -> str:

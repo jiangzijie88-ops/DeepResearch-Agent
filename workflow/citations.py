@@ -2,6 +2,7 @@
 
 import logging
 import re
+from urllib.parse import quote, urlsplit
 
 from models.evidence import Evidence
 
@@ -24,13 +25,54 @@ def report_body(report: str) -> str:
     return REFERENCE_SECTION.sub("", report).rstrip()
 
 
+def link_paper_titles(body: str, evidence: list[Evidence]) -> str:
+    """Link exact cited titles using stored addresses, preserving Markdown links/code."""
+    cited = set(extract_citation_ids(body))
+    links = {}
+    for item in evidence:
+        if item.evidence_id not in cited or not item.title:
+            continue
+        candidates = []
+        if item.doi:
+            doi = item.doi.strip()
+            if doi.startswith("10."):
+                candidates.append("https://doi.org/" + doi)
+            elif doi.startswith(("https://doi.org/", "http://doi.org/")):
+                candidates.append(doi)
+        if item.url:
+            candidates.append(item.url.strip())
+        for url in candidates:
+            parsed = urlsplit(url)
+            if parsed.scheme in {"http", "https"} and parsed.netloc:
+                links[item.title] = quote(url, safe=":/?#[]@!$&'*+,;=%~_-.")
+                break
+    if not links:
+        return body
+    titles = "|".join(re.escape(title) for title in sorted(links, key=len, reverse=True))
+    # Match protected Markdown first so repeated processing cannot nest links.
+    pattern = re.compile(
+        r"(?P<protected>```[\s\S]*?```|~~~[\s\S]*?~~~|`+[^`\n]*`+|"
+        r"!?\[(?:\\.|[^\]\\\n])*\]\((?:\\.|[^)\\\n])*\)|"
+        r"\[[^\]\n]+\]\[[^\]\n]*\])|(?P<title>" + titles + r")"
+    )
+
+    def replace(match):
+        title = match.group("title")
+        if title is None:
+            return match.group(0)
+        label = re.sub(r"([\\\[\]])", r"\\\1", title)
+        return f"[{label}]({links[title]})"
+
+    return pattern.sub(replace, body)
+
+
 def append_references(report: str, evidence: list[Evidence]) -> str:
     """Replace generated reference sections with trusted cited metadata.
 
     Unknown IDs remain in the body for future citation validation, but never
     acquire fabricated references. No citations means no reference section.
     """
-    body = report_body(report)
+    body = link_paper_titles(report_body(report), evidence)
     lookup = {item.evidence_id: item for item in evidence if item.evidence_id}
     entries = []
     for evidence_id in extract_citation_ids(body):

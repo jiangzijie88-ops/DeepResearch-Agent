@@ -1,11 +1,17 @@
 import asyncio
 import json
 from threading import Event
+import pytest
 
 from fastapi.testclient import TestClient
 from api.server import app
 from models.research_state import ResearchState
 from workflow.events import WorkflowEvent
+
+
+@pytest.fixture(autouse=True)
+def isolated_report_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr("api.server.REPORT_DIR", tmp_path / "reports")
 
 
 def event(message):

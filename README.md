@@ -108,13 +108,12 @@ DeepResearch-Agent/
 ├── llm.py                # 模型配置工厂
 ├── memory.py             # 持久化研究记忆
 ├── requirements.txt      # 固定版本的直接依赖
-├── .env.example          # 不含凭据的环境变量模板
 └── README.md
 ```
 
 ## Quick Start
 
-已验证的开发环境为 Python 3.11。需要能访问所选模型和检索服务的网络。
+**1. 安装环境**（Python 3.11，需要能访问模型和检索服务的网络）
 
 ```bash
 git clone https://github.com/jiangzijie88-ops/DeepResearch-Agent.git
@@ -124,25 +123,30 @@ conda activate deepresearch
 python -m pip install -r requirements.txt
 ```
 
-复制配置模板（已有 .env 时不要覆盖）：
+**2. 配置模型和密钥**
 
-```bash
-cp .env.example .env
+在项目根目录新建 `.env` 文件（已有配置请直接编辑，不要覆盖），选择一个模型服务，并填全对应的三项配置：
+
+```dotenv
+LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=你的API密钥
+DEEPSEEK_MODEL=服务支持的模型名称
+DEEPSEEK_BASE_URL=服务提供的API地址
 ```
 
-Windows PowerShell 使用 `Copy-Item .env.example .env`，cmd 使用 `copy .env.example .env`。编辑 .env：
+使用 OpenAI 时，将 `LLM_PROVIDER` 改为 `openai`，添加并填写 `OPENAI_API_KEY`、`OPENAI_MODEL`、`OPENAI_BASE_URL`；未选服务的配置可省略。密钥从对应服务平台获取，模型需支持 Tool Calling 和结构化输出（Chat Completions）。以上占位内容需替换为实际值。
 
-| 变量 | 说明 |
-|---|---|
-| LLM_PROVIDER | deepseek（默认）或 openai |
-| DEEPSEEK_API_KEY / DEEPSEEK_MODEL / DEEPSEEK_BASE_URL | 选择 deepseek 时三项必填 |
-| OPENAI_API_KEY / OPENAI_MODEL / OPENAI_BASE_URL | 选择 openai 时三项必填 |
-| OPENALEX_API_KEY | 学术 provider 凭据，由 OpenAlex adapter 读取 |
-| SEMANTIC_SCHOLAR_API_KEY | 学术 provider 凭据，由 Semantic Scholar adapter 读取 |
+检索密钥 `OPENALEX_API_KEY`、`SEMANTIC_SCHOLAR_API_KEY` 按需填写；可留空，但可用性和限流取决于服务方。不要提交 `.env`；运行研究可能产生模型费用。
 
-模型名称与 base URL 填写你所选服务实际提供的值。模型需支持 Tool Calling 和结构化输出；代码使用 Chat Completions，并为 DeepSeek 配置关闭 thinking。未选择的模型 provider 字段可以留空。学术 adapter 允许未提供 key，但服务是否接受请求、配额与限流取决于 provider。
+**3. 启动研究**
 
-真实研究会调用外部服务，可能产生模型费用；测试使用 fake 数据与安全 dummy 配置。不要提交 .env。
+```bash
+python main.py
+```
+
+按提示输入研究问题，报告保存在 `outputs/`。例如：`调研 2025–2026 年推荐系统的最新研究，不限方向，按研究方向归纳代表论文、主要方法与开放问题。`
+
+需要网页界面时，按下方 [FastAPI](#fastapi) 和 [Streamlit](#streamlit) 说明分别启动后端与前端。
 
 ## CLI Usage and Resume
 
@@ -173,6 +177,11 @@ python -m uvicorn api.server:app --host 127.0.0.1 --port 8000 --reload
 | GET / | 服务存活信息 |
 | POST /research | 同步研究，完成后返回 JSON |
 | POST /research/stream | 实时 SSE 阶段事件，最后返回报告 |
+
+研究完成后，两个接口均会自动将完整报告以 UTF-8 Markdown 保存到项目根目录的
+`outputs/report_日期时间_唯一标识.md`，不会覆盖已有报告。在本机运行后端时，文件就保存在本机该目录。
+前端报告下方还提供“下载报告（Markdown）”按钮，可通过浏览器另存一份 `.md` 文件；下载不会重新运行研究。
+报告中的“研究子问题”由程序直接读取 Planner 研究计划，按原顺序列出原始问题，页面展示、下载与自动保存的内容一致。
 
 两个 POST 接口的请求均为 `{"question": "..."}`。以下为 Bash/curl 示例：
 

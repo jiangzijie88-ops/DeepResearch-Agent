@@ -59,6 +59,27 @@ def test_frontend_displays_report_and_evidence(monkeypatch):
     assert len(app.dataframe) == 1  # Keep results across Streamlit reruns.
 
 
+def test_frontend_downloads_displayed_report_as_markdown(monkeypatch):
+    import streamlit as st
+
+    downloads = []
+    original = st.download_button
+
+    def capture(*args, **kwargs):
+        downloads.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(st, "download_button", capture)
+    report = "# 中文报告\n\n[论文](https://example.org/paper)"
+    app = submit(monkeypatch, response=response_for({
+        "report": report, "evidence": [],
+    }))
+    assert not app.exception
+    assert downloads[0]["data"] == report.encode("utf-8")
+    assert downloads[0]["file_name"].endswith(".md")
+    assert downloads[0]["mime"] == "text/markdown"
+
+
 def test_frontend_rejects_whitespace_without_request(monkeypatch):
     def unexpected_request(*args, **kwargs):
         pytest.fail("blank input must not contact the API")

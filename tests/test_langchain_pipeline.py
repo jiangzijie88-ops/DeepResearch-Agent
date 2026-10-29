@@ -72,7 +72,7 @@ def test_full_langchain_pipeline_with_reresearch_memory_and_resume(monkeypatch, 
 
     assert state.status == ResearchStatus.COMPLETED
     assert state.draft_report == "# Draft report"
-    assert state.final_report == "# Final report"
+    assert state.final_report == "# Final report\n\n## 研究子问题\n\n1. initial query"
     assert state.critic_review.needs_research is True
     assert state.final_review.verdict == "PASS"
     assert len(state.evidence) == 1 and state.evidence[0].citations == 8
@@ -81,8 +81,8 @@ def test_full_langchain_pipeline_with_reresearch_memory_and_resume(monkeypatch, 
     assert "Remembered result" in create.call_args_list[0].kwargs["messages"][1]["content"]
     assert '"citations": 8' in create.call_args_list[7].kwargs["messages"][1]["content"]
     memories = load_memory(memory_path)
-    assert len(memories) == 2 and memories[-1].summary == "# Final report"
+    assert len(memories) == 2 and memories[-1].summary == "# Final report\n\n## 研究子问题\n\n1. initial query"
     saved = load_state(state_path)
     assert saved.model_dump() == state.model_dump()
-    assert run_research_pipeline(state=saved).final_report == "# Final report"
+    assert run_research_pipeline(state=saved).final_report == "# Final report\n\n## 研究子问题\n\n1. initial query"
     assert create.call_count == 9  # Completed Resume must not repeat model calls.

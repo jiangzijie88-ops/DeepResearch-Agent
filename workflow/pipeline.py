@@ -21,6 +21,7 @@ from models.research_state import (
 from models.state_store import save_state
 from workflow.events import EventSink, emit_event, workflow_lifecycle
 from workflow.citations import append_references, report_body
+from workflow.report_plan import include_research_questions
 from workflow.citation_validation import (
     validate_citations, build_support_context, merge_citation_review,
 )
@@ -830,6 +831,10 @@ Writer 修订后的 Research Report：
     # ========================================================
     # Complete
     # ========================================================
+
+    # Use the stored plan after model revision so its wording cannot be rewritten.
+    state.final_report = include_research_questions(final_report, state.plan)
+    final_report = state.final_report
 
     state.status = (
         ResearchStatus.COMPLETED
